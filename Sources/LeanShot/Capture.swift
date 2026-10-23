@@ -54,16 +54,29 @@ enum Clipboard {
 }
 
 enum OCR {
+    static func copyContents(_ url: URL) {
+        guard let image = NSImage(contentsOf: url) else { return }
+        recognize(image) { text in
+            guard !text.isEmpty else { return Toast.show("No text or QR code found") }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            Toast.show("Copied \(text.count) characters")
+        }
+    }
     static func recognize(_ image: NSImage, completion: @escaping (String) -> Void) {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return completion("") }
-        let request = VNRecognizeTextRequest { req, _ in
-            let lines = (req.results as? [VNRecognizedTextObservation] ?? []).compactMap { $0.topCandidates(1).first?.string }
-            DispatchQueue.main.async { completion(lines.joined(separator: "\n")) }
-        }
+        let request = VNRecognizeTextRequest()
+        let codes = VNDetectBarcodesRequest()
         request.recognitionLevel = .accurate
         request.automaticallyDetectsLanguage = true
         DispatchQueue.global(qos: .userInitiated).async {
-            do { try VNImageRequestHandler(cgImage: cg).perform([request]) } catch { DispatchQueue.main.async { completion("") } }
+            do {
+                try VNImageRequestHandler(cgImage: cg).perform([request, codes])
+                var lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                for value in (codes.results ?? []).compactMap(\.payloadStringValue) where !lines.contains(value) { lines.append(value) }
+                let text = lines.joined(separator: "\n")
+                DispatchQueue.main.async { completion(text) }
+            } catch { DispatchQueue.main.async { completion("") } }
         }
     }
 }

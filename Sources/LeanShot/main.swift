@@ -82,12 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openFolder() { NSWorkspace.shared.open(Capture.folder) }
 
     private func shoot(_ args: [String], ext: String = "png", finished: (() -> Void)? = nil) {
-        QuickAccess.dismiss() // keep the overlay out of the next shot
+        QuickAccess.hide() // restore older thumbnails once capture finishes
         let started = Capture.run(args, to: Capture.newURL(ext)) { [weak self] url in
             finished?()
+            QuickAccess.restore()
             guard let url else { return }
             self?.lastCapture = url
-            Clipboard.copy(url)
+            if Settings.copyOnCapture { Clipboard.copy(url) }
             QuickAccess.show(url)
         }
         if !started { finished?() }
