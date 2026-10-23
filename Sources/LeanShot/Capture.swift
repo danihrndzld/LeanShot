@@ -54,6 +54,17 @@ enum Clipboard {
 }
 
 enum OCR {
+    static func textRects(_ image: NSImage, completion: @escaping ([CGRect]) -> Void) {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { completion([]); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let request = VNRecognizeTextRequest(); request.recognitionLevel = .fast; request.usesLanguageCorrection = false
+            do {
+                try VNImageRequestHandler(cgImage: cg).perform([request])
+                let rects = (request.results ?? []).map(\.boundingBox)
+                DispatchQueue.main.async { completion(rects) }
+            } catch { DispatchQueue.main.async { completion([]) } }
+        }
+    }
     static func copyContents(_ url: URL) {
         guard let image = NSImage(contentsOf: url) else { return }
         recognize(image) { text in

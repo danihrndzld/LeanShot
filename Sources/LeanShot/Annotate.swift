@@ -89,11 +89,18 @@ struct Mark: Codable {
 
 /// Draws the screenshot plus marks. Marks live in view coordinates; export rescales to pixels.
 final class Canvas: NSView, NSTextFieldDelegate {
-    var image: NSImage
+    var image: NSImage { didSet { highlightRects = nil; if tool == .highlight { detectHighlightText() } } }
     private var pixelated: NSImage?
     private var blurred: NSImage?
     var marks: [Mark] = [] { didSet { needsDisplay = true } }
-    var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool) } }
+    var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool); if tool == .highlight { detectHighlightText() } } }
+    private var highlightRects: [CGRect]?
+    private func detectHighlightText() {
+        guard highlightRects == nil else { return }
+        highlightRects = []
+        let source = image
+        OCR.textRects(source) { [weak self] rects in if let self, self.image === source { self.highlightRects = rects } }
+    }
     var color: NSColor = .systemRed { didSet { if let selected { checkpoint(); marks[selected].color = color } } }
     var width: CGFloat = 4 { didSet { if let selected { checkpoint(); marks[selected].width = width } } }
     var arrowStyle = 0
@@ -368,6 +375,13 @@ final class Canvas: NSView, NSTextFieldDelegate {
 
     override func mouseUp(with event: NSEvent) {
         defer { dragFrom = nil; resizeCorner = nil }
+        if tool == .highlight, let mark = marks.last, mark.tool == .highlight, let highlightRects {
+            let boxes = highlightRects.map { CGRect(x: $0.minX * bounds.width, y: $0.minY * bounds.height, width: $0.width * bounds.width, height: $0.height * bounds.height) }.filter { $0.intersects(mark.rect) }
+            if let first = boxes.first {
+                let line = boxes.dropFirst().reduce(first) { $0.union($1) }
+                marks[marks.count - 1].points = [CGPoint(x: mark.rect.minX, y: line.minY - 1), CGPoint(x: mark.rect.maxX, y: line.maxY + 1)]
+            }
+        }
         if tool == .crop, let m = marks.last, m.tool == .crop {
             marks.removeLast()
             if m.rect.width > 1, m.rect.height > 1 {
@@ -811,27 +825,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         }
     }
     @objc private func background() {
-        let alert = NSAlert(); alert.messageText = "Background"; alert.informativeText = "Add padding, rounded corners and a background. Apply can be undone."
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
-        let presets = NSPopUpButton(); presets.addItems(withTitles: BackgroundStyle.names)
-        let aspect = NSPopUpButton(); aspect.addItems(withTitles: ["Auto aspect", "Square", "Landscape 16:9", "Portrait 9:16", "4:3"])
-        let align = NSPopUpButton(); align.addItems(withTitles: ["Left", "Center (Auto Balance)", "Right"]); align.selectItem(at: 1)
-        let pad = NSTextField(string: "64"); let radius = NSTextField(string: "16")
-        let shadow = NSButton(checkboxWithTitle: "Drop shadow", target: nil, action: nil); shadow.state = .on
-        for v in [presets, aspect, align, NSTextField(labelWithString: "Padding (points)"), pad, NSTextField(labelWithString: "Corner radius"), radius, shadow] { stack.addArrangedSubview(v) }
-        let saved = Settings.defaults.data(forKey: "backgroundPreset").flatMap { try? JSONDecoder().decode(BackgroundStyle.self, from: $0) }
-        if let saved { presets.selectItem(at: saved.palette); aspect.selectItem(at: saved.aspect); align.selectItem(at: saved.alignment); pad.stringValue = "\(Int(saved.padding))"; radius.stringValue = "\(Int(saved.radius))"; shadow.state = saved.shadow ? .on : .off }
-        stack.frame = NSRect(x: 0, y: 0, width: 300, height: 260); alert.accessoryView = stack
-        alert.addButton(withTitle: "Apply & Save Preset"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        var style = BackgroundStyle(); style.palette = presets.indexOfSelectedItem; style.aspect = aspect.indexOfSelectedItem; style.alignment = align.indexOfSelectedItem
-        style.padding = CGFloat(min(512, max(0, pad.doubleValue))); style.radius = CGFloat(min(256, max(0, radius.doubleValue))); style.shadow = shadow.state == .on
-        if style.palette == 19 {
-            let p = NSOpenPanel(); p.allowedContentTypes = [.image]
-            guard p.runModal() == .OK, let url = p.url, let data = try? Data(contentsOf: url) else { return }; style.customImage = data
-        }
-        Settings.defaults.set(try? JSONEncoder().encode(style), forKey: "backgroundPreset")
-        canvas.replaceImage(style.apply(to: canvas.export()))
+        if let style = BackgroundEditor.choose() { canvas.replaceImage(style.apply(to: canvas.export())) }
     }
 
     // MARK: Zoom
