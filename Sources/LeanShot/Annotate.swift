@@ -35,12 +35,12 @@ struct Mark: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         tool = try c.decode(Tool.self, forKey: .tool); points = try c.decode([CGPoint].self, forKey: .points)
-        guard !points.isEmpty, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { throw CocoaError(.fileReadCorruptFile) }
+        guard !points.isEmpty, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else { throw CocoaError(.fileReadCorruptFile) }
         let rgba = try c.decode([CGFloat].self, forKey: .color)
         guard rgba.count == 4, rgba.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw CocoaError(.fileReadCorruptFile) }
         color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba[3])
         width = try c.decode(CGFloat.self, forKey: .width)
-        guard width.isFinite, width > 0, points.count >= 2 || [.text, .counter, .pen].contains(tool) else { throw CocoaError(.fileReadCorruptFile) }
+        guard width.isFinite, (0.1...256).contains(width), points.count >= 2 || [.text, .counter, .pen].contains(tool) else { throw CocoaError(.fileReadCorruptFile) }
         text = try c.decode(String.self, forKey: .text); style = try c.decodeIfPresent(Int.self, forKey: .style) ?? 0
         imageData = try c.decodeIfPresent(Data.self, forKey: .imageData)
     }
@@ -94,8 +94,8 @@ final class Canvas: NSView, NSTextFieldDelegate {
     private var blurred: NSImage?
     var marks: [Mark] = [] { didSet { needsDisplay = true } }
     var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool) } }
-    var color: NSColor = .systemRed
-    var width: CGFloat = 4
+    var color: NSColor = .systemRed { didSet { if let selected { checkpoint(); marks[selected].color = color } } }
+    var width: CGFloat = 4 { didSet { if let selected { checkpoint(); marks[selected].width = width } } }
     var arrowStyle = 0
     var textStyle = 0
     var cropAspect: CGFloat = 0
@@ -107,6 +107,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
     private var selected: Int? { didSet { needsDisplay = true } }
     private var dragFrom: CGPoint?
     private var moveUnsaved = false // select-click only records undo once it actually moves
+    private var resizeCorner: Int?
     private var editor: NSTextField?
 
     init(image: NSImage, size: NSSize? = nil) {
@@ -138,6 +139,12 @@ final class Canvas: NSView, NSTextFieldDelegate {
             p.lineWidth = 1.5
             NSColor.controlAccentColor.setStroke()
             p.stroke()
+            if canResize(marks[i]) {
+                for corner in corners(marks[i].rect) {
+                    NSColor.white.setFill(); NSColor.controlAccentColor.setStroke()
+                    let handle = NSBezierPath(rect: NSRect(x: corner.x - 4, y: corner.y - 4, width: 8, height: 8)); handle.fill(); handle.stroke()
+                }
+            }
         }
     }
 
@@ -283,6 +290,8 @@ final class Canvas: NSView, NSTextFieldDelegate {
     // MARK: Editing
 
     private var state: State { State(image: image, marks: marks, size: bounds.size) }
+    private func canResize(_ mark: Mark) -> Bool { ![.pen, .text, .counter, .arrow, .line].contains(mark.tool) }
+    private func corners(_ rect: CGRect) -> [CGPoint] { [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)] }
     private func checkpoint() { history.append(state); future.removeAll() }
     private func restore(_ state: State) {
         image = state.image; marks = state.marks; setFrameSize(state.size)
@@ -313,6 +322,10 @@ final class Canvas: NSView, NSTextFieldDelegate {
         let p = convert(event.locationInWindow, from: nil)
         switch tool {
         case .select:
+            if let selected, canResize(marks[selected]), let corner = corners(marks[selected].rect).firstIndex(where: { hypot($0.x - p.x, $0.y - p.y) < 10 }) {
+                resizeCorner = corner; dragFrom = p; moveUnsaved = true; return
+            }
+            resizeCorner = nil
             selected = marks.indices.last { marks[$0].bounds.contains(p) }
             if selected != nil { dragFrom = p; moveUnsaved = true }
         case .text:
@@ -337,7 +350,14 @@ final class Canvas: NSView, NSTextFieldDelegate {
         }
         if tool == .select, let i = selected {
             if moveUnsaved { checkpoint(); moveUnsaved = false }
-            marks[i].move(by: p.x - from.x, p.y - from.y)
+            if let corner = resizeCorner {
+                let opposite = corners(marks[i].rect)[(corner + 2) % 4]
+                if marks[i].tool == .image || event.modifierFlags.contains(.shift) {
+                    let ratio = marks[i].rect.width / max(1, marks[i].rect.height)
+                    p.y = opposite.y + (p.y > opposite.y ? 1 : -1) * abs(p.x - opposite.x) / ratio
+                }
+                if abs(p.x - opposite.x) > 2, abs(p.y - opposite.y) > 2 { marks[i].points = [opposite, p] }
+            } else { marks[i].move(by: p.x - from.x, p.y - from.y) }
             dragFrom = p
         } else if tool == .pen {
             marks[marks.count - 1].points.append(p)
@@ -347,7 +367,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { dragFrom = nil }
+        defer { dragFrom = nil; resizeCorner = nil }
         if tool == .crop, let m = marks.last, m.tool == .crop {
             marks.removeLast()
             if m.rect.width > 1, m.rect.height > 1 {
@@ -436,8 +456,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
     }
 
     func pngData() -> Data? {
-        guard let tiff = export().tiffRepresentation else { return nil }
-        return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        ImageTools.png(export())
     }
 }
 
@@ -656,6 +675,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
                                            labels: Tool.visible.map(\.label), target: self, action: #selector(pickTool))
             for (sub, t) in zip(group.subitems, Tool.visible) { sub.toolTip = "\(t.label) (\(t.key.uppercased()))" }
             group.selectedIndex = canvas.tool.rawValue
+            group.controlRepresentation = .expanded
             toolsItem = group
             return group
         case .color:
@@ -856,9 +876,10 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         }
         guard let png = canvas.pngData() else { return }
         do {
-            try png.write(to: source)
-            Clipboard.copy(source)
-            QuickAccess.show(source)
+            let destination = source.deletingLastPathComponent().standardizedFileURL == Capture.folder.standardizedFileURL && source.pathExtension.lowercased() == "png" ? source! : Capture.newURL("png")
+            try png.write(to: destination, options: .atomic)
+            Clipboard.copy(destination)
+            QuickAccess.show(destination)
             close()
         } catch { NSAlert(error: error).runModal() }
     }
@@ -916,7 +937,8 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             Mark(tool: .counter, points: [CGPoint(x: 330, y: 60)], color: .systemBlue, width: 4),
         ]
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let v = w.contentView!.superview!
+            var v = w.contentView!
+            while let parent = v.superview { v = parent }
             let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds)!
             v.cacheDisplay(in: v.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: output)

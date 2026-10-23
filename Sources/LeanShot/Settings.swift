@@ -25,12 +25,12 @@ final class SettingsWindow: NSWindow {
     private static var instance: SettingsWindow?
     static func show() {
         if let w = instance { NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil); return }
-        let w = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 480), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let w = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "LeanShot Settings"
         w.isReleasedWhenClosed = false
         let stack = NSStackView()
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
-        stack.frame = NSRect(x: 28, y: 24, width: 424, height: 428)
+        stack.frame = NSRect(x: 28, y: 24, width: 424, height: 508)
         func toggle(_ title: String, _ value: Bool, _ change: @escaping (Bool) -> Void) {
             let b = ClosureButton(frame: .zero) {}
             b.setButtonType(.switch); b.title = title; b.state = value ? .on : .off

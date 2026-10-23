@@ -14,7 +14,6 @@ struct ScreenRegion {
 /// Freeze-frame region picker shared by screenshots, scrolling capture and video.
 final class RegionSelector: NSWindow {
     private static var current: RegionSelector?
-    private var completion: ((ScreenRegion?, NSImage?) -> Void)?
     static var isSelecting = false
 
     static func choose(completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
@@ -41,11 +40,11 @@ final class RegionSelector: NSWindow {
                     let region = rect.map { ScreenRegion(screen: screen, rect: $0) }
                     let shot = rect.map { ImageTools.crop(image, to: $0) }
                     if let rect { Settings.defaults.set(NSStringFromRect(rect), forKey: "lastRegion.\(displayID)") }
-                    w?.orderOut(nil); current = nil; isSelecting = false; QuickAccess.restore(); completion(region, shot)
+                    w?.orderOut(nil); current = nil; isSelecting = false; QuickAccess.resume(); completion(region, shot)
                 }
                 w.contentView = v; current = w
                 NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
-            } catch { isSelecting = false; QuickAccess.restore(); NSAlert(error: error).runModal(); completion(nil, nil) }
+            } catch { isSelecting = false; QuickAccess.resume(); NSAlert(error: error).runModal(); completion(nil, nil) }
         }
     }
     override var canBecomeKey: Bool { true }

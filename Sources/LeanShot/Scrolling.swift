@@ -105,9 +105,12 @@ final class ScrollingSession {
                     let length = horizontal ? next.size.width : next.size.height
                     if overlap >= length - 1 { label.stringValue = "No scroll detected · Scroll further and try again" }
                     else {
+                        let scale = ImageTools.pixelSize(result).width / result.size.width
+                        let width = result.size.width + (horizontal ? length - overlap : 0)
+                        let height = result.size.height + (horizontal ? 0 : length - overlap)
+                        guard width * height * scale * scale <= 100_000_000 else { throw NSError(domain: "LeanShot", code: 2, userInfo: [NSLocalizedDescriptionKey: "Capture reached 100 megapixels. Finish this capture before starting another."]) }
                         let candidate = Stitcher.append(next, to: result, overlap: overlap, horizontal: horizontal)
                         let pixels = ImageTools.pixelSize(candidate)
-                        guard pixels.width * pixels.height <= 100_000_000 else { throw NSError(domain: "LeanShot", code: 2, userInfo: [NSLocalizedDescriptionKey: "Capture reached 100 megapixels. Finish this capture before starting another."]) }
                         result = candidate; previous = next; frames += 1; label.stringValue = "\(frames) frames · \(Int(pixels.width)) × \(Int(pixels.height)) px"
                     }
                 } else { label.stringValue = "No overlap found · Scroll back a little and retry" }
@@ -121,5 +124,5 @@ final class ScrollingSession {
         do { try data.write(to: url, options: .atomic); cancel(); if Settings.copyOnCapture { Clipboard.copy(url) }; QuickAccess.show(url) }
         catch { NSAlert(error: error).runModal() }
     }
-    private func cancel() { guard !busy else { return }; panel.orderOut(nil); Self.current = nil; QuickAccess.restore() }
+    private func cancel() { guard !busy else { return }; panel.orderOut(nil); Self.current = nil; QuickAccess.resume() }
 }

@@ -14,8 +14,10 @@ struct ShotProject: Codable {
     }
     func decodedImage() throws -> NSImage {
         guard version == 1, let result = NSImage(data: image),
-              size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
-              canvasSize.width.isFinite, canvasSize.height.isFinite, canvasSize.width > 0, canvasSize.height > 0 else { throw CocoaError(.fileReadCorruptFile) }
+              size.width.isFinite, size.height.isFinite, (1...100_000).contains(size.width), (1...100_000).contains(size.height),
+              canvasSize.width.isFinite, canvasSize.height.isFinite, (1...100_000).contains(canvasSize.width), (1...100_000).contains(canvasSize.height) else { throw CocoaError(.fileReadCorruptFile) }
+        let pixels = ImageTools.pixelSize(result)
+        guard pixels.width * pixels.height <= 100_000_000 else { throw CocoaError(.fileReadCorruptFile) }
         result.size = size; return result
     }
     static func read(_ url: URL) throws -> ShotProject { try JSONDecoder().decode(Self.self, from: Data(contentsOf: url)) }

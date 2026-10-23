@@ -9,19 +9,41 @@ enum QuickAccess {
     private static var hidden = false
 
     static var activeCount: Int { cards.count }
-    static func dismiss() { cards.forEach { $0.panel.orderOut(nil) }; recentlyClosed = cards.map(\.url); cards.removeAll() }
+    static func preview(_ url: URL, to output: URL) {
+        let left = OverlayCard(url: url, screen: NSScreen.main)
+        let right = OverlayCard(url: url, screen: NSScreen.main)
+        left.panel.setFrameOrigin(NSPoint(x: 100, y: 120)); right.panel.setFrameOrigin(NSPoint(x: 420, y: 120))
+        left.panel.orderFrontRegardless(); right.panel.orderFrontRegardless(); right.setHovered(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let views = [left, right]
+            let size = NSSize(width: left.bounds.width * 2 + 72, height: left.bounds.height + 80)
+            let image = ImageTools.render(size: size, pixels: NSSize(width: size.width * 2, height: size.height * 2)) { rect in
+                NSColor(srgbRed: 0.22, green: 0.3, blue: 0.44, alpha: 1).setFill(); rect.fill()
+                for (index, view) in views.enumerated() {
+                    if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: rep)
+                        rep.draw(in: NSRect(x: 24 + CGFloat(index) * (view.bounds.width + 24), y: 28, width: view.bounds.width, height: view.bounds.height))
+                    }
+                }
+            }
+            do { try ImageTools.png(image)?.write(to: output); print("wrote \(output.path)"); exit(0) }
+            catch { print(error); exit(1) }
+        }
+    }
+    static func dismiss() { cards.forEach { $0.panel.orderOut(nil); $0.panel.contentView = nil }; recentlyClosed = cards.map(\.url); cards.removeAll() }
     static func hide() { hidden = true; cards.forEach { $0.panel.orderOut(nil) } }
+    static func resume() { hidden = false; layout() }
     static func restore() {
         hidden = false
         if cards.isEmpty {
             let urls = recentlyClosed; recentlyClosed = []
             urls.filter { FileManager.default.fileExists(atPath: $0.path) }.reversed().forEach { show($0) }
-        } else { cards.forEach { $0.panel.orderFrontRegardless() } }
+        } else { layout() }
     }
     static func close(_ card: OverlayCard) {
         recentlyClosed.removeAll { $0 == card.url }; recentlyClosed.insert(card.url, at: 0)
         recentlyClosed = Array(recentlyClosed.prefix(8))
-        card.panel.orderOut(nil); cards.removeAll { $0 === card }; layout()
+        card.panel.orderOut(nil); card.panel.contentView = nil; cards.removeAll { $0 === card }; layout()
     }
     static func show(_ url: URL) {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
@@ -32,12 +54,13 @@ enum QuickAccess {
         cards.insert(card, at: 0)
         while cards.count > 4 { close(cards.last!) }
         hidden = false; layout()
-        cards.forEach { $0.panel.orderFrontRegardless() }
-        if Settings.autoClose > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Settings.autoClose) { [weak card] in
-                guard let card, !card.isHovered, !card.isDragging else { return }
-                close(card)
-            }
+        if Settings.autoClose > 0 { scheduleClose(card, after: Settings.autoClose) }
+    }
+    private static func scheduleClose(_ card: OverlayCard, after seconds: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak card] in
+            guard let card, cards.contains(where: { $0 === card }) else { return }
+            if card.isHovered || card.isDragging || card.menuIsOpen || hidden { scheduleClose(card, after: 1) }
+            else { close(card) }
         }
     }
     private static func layout() {
@@ -52,17 +75,19 @@ enum QuickAccess {
             let y = top ? f.maxY - offset - card.panel.frame.height : f.minY + offset
             if offset + card.panel.frame.height > f.height { card.panel.orderOut(nil); continue }
             card.panel.setFrameOrigin(NSPoint(x: x, y: y))
+            if !hidden { card.panel.orderFrontRegardless() }
             offsets[id] = offset + card.panel.frame.height + 12
         }
     }
 }
 
-final class OverlayCard: NSView {
+final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
     let url: URL
     let panel: NSPanel
     let screen: NSScreen?
     var isHovered = false
     var isDragging = false
+    var menuIsOpen = false
     private let controls = NSView()
     private let thumbnail: DragImageView
     private var actions: [() -> Void] = []
@@ -85,6 +110,15 @@ final class OverlayCard: NSView {
         // Exclude overlays from screenshots taken by screen capture APIs.
         panel.sharingType = .none
         thumbnail.url = url; thumbnail.image = image ?? NSWorkspace.shared.icon(forFile: url.path)
+        if image == nil, ["mov", "mp4"].contains(url.pathExtension.lowercased()) {
+            Task { @MainActor [weak self] in
+                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url)); generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 680, height: 420)
+                if let frame = try? await generator.image(at: .zero) {
+                    self?.thumbnail.image = NSImage(cgImage: frame.image, size: NSSize(width: frame.image.width, height: frame.image.height))
+                }
+            }
+        }
         thumbnail.imageScaling = .scaleProportionallyUpOrDown
         thumbnail.toolTip = "Drag to any app · Double-click to edit · Right-click for actions"
         thumbnail.doubleClick = { [weak self] in self?.edit() }
@@ -104,11 +138,12 @@ final class OverlayCard: NSView {
         _ = button("Close", symbol: "xmark", rect: NSRect(x: width - 38, y: height - 36, width: 28, height: 28)) { [weak self] in if let self { QuickAccess.close(self) } }
         _ = button("Annotate", symbol: "pencil", rect: NSRect(x: 10, y: 8, width: 28, height: 28)) { [weak self] in self?.edit() }
         _ = button("Share", symbol: "square.and.arrow.up", rect: NSRect(x: width - 38, y: 8, width: 28, height: 28)) { [weak self] in self?.share() }
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let info = NSTextField(labelWithString: ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
+        info.font = .systemFont(ofSize: 10); info.textColor = .secondaryLabelColor; info.alignment = .center
+        info.frame = NSRect(x: 44, y: 12, width: width - 88, height: 16); controls.addSubview(info)
         controls.isHidden = true
-        // A passthrough container lets drags start anywhere outside the buttons.
-        let passthrough = OverlayControls(frame: bounds)
-        for v in controls.subviews { v.removeFromSuperview(); passthrough.addSubview(v) }
-        controls.addSubview(passthrough); addSubview(controls)
+        addSubview(controls)
         let menu = NSMenu()
         func action(_ title: String, _ run: @escaping () -> Void) {
             actions.append(run)
@@ -124,7 +159,7 @@ final class OverlayCard: NSView {
         menu.addItem(.separator())
         action("Copy") { Clipboard.copy(url) }
         action("Save As…") { [weak self] in self?.save() }
-        action("Quick Look") { NSWorkspace.shared.open(url) }
+        action("Quick Look") { [weak self] in self?.quickLook() }
         action("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         action("Share…") { [weak self] in self?.share() }
         menu.addItem(.separator())
@@ -134,7 +169,7 @@ final class OverlayCard: NSView {
             do { try FileManager.default.trashItem(at: url, resultingItemURL: nil); if let self { QuickAccess.close(self) } }
             catch { NSAlert(error: error).runModal() }
         }
-        self.menu = menu; thumbnail.menu = menu
+        menu.delegate = self; self.menu = menu; thumbnail.menu = menu
         panel.contentView = self
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -146,7 +181,7 @@ final class OverlayCard: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
         if !controls.isHidden {
-            for button in controls.subviews.flatMap(\.subviews).compactMap({ $0 as? NSButton }) where button.frame.contains(p) { return button }
+            for button in controls.subviews.compactMap({ $0 as? NSButton }) where button.frame.contains(p) { return button }
         }
         return bounds.contains(p) ? thumbnail : nil
     }
@@ -159,11 +194,19 @@ final class OverlayCard: NSView {
     override func mouseEntered(with event: NSEvent) { setHovered(true) }
     override func mouseExited(with event: NSEvent) { if !isDragging { setHovered(false) } }
     override func swipe(with event: NSEvent) { if abs(event.deltaX) > 0 { QuickAccess.close(self) } }
-    private func setHovered(_ value: Bool) { isHovered = value; controls.isHidden = !value }
+    fileprivate func setHovered(_ value: Bool) { isHovered = value; controls.isHidden = !value }
     @objc private func menuAction(_ sender: NSMenuItem) { actions[sender.tag]() }
+    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+    func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
+    private func quickLook() {
+        guard let preview = QLPreviewPanel.shared() else { return }
+        NSApp.activate(ignoringOtherApps: true); preview.dataSource = self; preview.reloadData(); preview.makeKeyAndOrderFront(nil)
+    }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { 1 }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url as NSURL }
     private func edit() {
         if NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
-        else { NSWorkspace.shared.open(url) }
+        else { VideoEditor.open(url) }
     }
     private func pin() { if let image = NSImage(contentsOf: url) { PinWindow.pin(image) } }
     private func save() {
@@ -182,12 +225,6 @@ final class OverlayCard: NSView {
     }
 }
 
-private final class OverlayControls: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
-        return hit is NSButton ? hit : nil
-    }
-}
 final class ClosureButton: NSButton {
     private var handler: () -> Void
     func setHandler(_ h: @escaping () -> Void) { handler = h }

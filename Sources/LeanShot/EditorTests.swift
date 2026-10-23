@@ -116,6 +116,10 @@ final class EditorTests {
         checkNotNil(project.marks[1].imageData)
         var unknown = project; unknown.version = 99
         checkThrows(try unknown.decodedImage())
+        var oversized = project; oversized.canvasSize.width = CGFloat.greatestFiniteMagnitude
+        checkThrows(try oversized.decodedImage())
+        let invalidMark = Mark(tool: .arrow, points: [], color: .red, width: 4)
+        checkThrows(try JSONDecoder().decode(Mark.self, from: JSONEncoder().encode(invalidMark)))
     }
     func testOpaqueRedactionExportsBlackPixels() {
         let canvas = Canvas(image: fixture())

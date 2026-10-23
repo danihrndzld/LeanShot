@@ -6,6 +6,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastCapture: URL? = CaptureHistory.files().first { NSImage(contentsOf: $0) != nil }
     private var recordItem: NSMenuItem?
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let commands: [String: Selector] = ["capture": #selector(captureArea), "area": #selector(captureArea), "window": #selector(captureWindow), "fullscreen": #selector(captureFullscreen), "text": #selector(captureText), "record": #selector(recordScreen), "all-in-one": #selector(allInOne), "history": #selector(history), "restore": #selector(restoreOverlay)]
+        for url in urls {
+            if url.scheme == "leanshot", let host = url.host, let action = commands[host] { perform(action) }
+            else if url.isFileURL {
+                if ["mp4", "mov"].contains(url.pathExtension.lowercased()) { VideoEditor.open(url) }
+                else { AnnotateWindow.open(url) }
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "LeanShot")
@@ -155,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         QuickAccess.hide() // restore older thumbnails once capture finishes
         let started = Capture.run(args + (Settings.captureCursor && ext == "png" ? ["-C"] : []), to: Capture.newURL(ext)) { [weak self] url in
             finished?()
-            QuickAccess.restore()
+            QuickAccess.resume()
             guard let url else { return }
             self?.lastCapture = url
             if Settings.copyOnCapture { Clipboard.copy(url) }
@@ -203,6 +214,11 @@ if CommandLine.arguments.contains("--selftest") {
 }
 
 let app = NSApplication.shared
+if let i = CommandLine.arguments.firstIndex(of: "--overlay-preview"), CommandLine.arguments.count > i + 2 {
+    app.setActivationPolicy(.accessory)
+    QuickAccess.preview(URL(fileURLWithPath: CommandLine.arguments[i + 1]), to: URL(fileURLWithPath: CommandLine.arguments[i + 2]))
+    app.run()
+}
 if let i = CommandLine.arguments.firstIndex(of: "--preview"), CommandLine.arguments.count > i + 2 {
     app.setActivationPolicy(.accessory)
     AnnotateWindow.preview(URL(fileURLWithPath: CommandLine.arguments[i + 1]), to: URL(fileURLWithPath: CommandLine.arguments[i + 2]))

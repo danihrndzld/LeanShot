@@ -85,7 +85,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     }
     func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.busy else { return }
+            guard let self, self.busy, self.output === recordingOutput else { return }
             self.recording = true; self.startTime = Date(); self.onStatus?("● 00:00")
             self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 guard let self else { return }; let seconds = Int(Date().timeIntervalSince(self.startTime))
@@ -94,10 +94,10 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
         }
     }
     func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        DispatchQueue.main.async { [weak self] in guard let self, self.busy else { return }; self.finish(self.url) }
+        DispatchQueue.main.async { [weak self] in guard let self, self.busy, self.output === recordingOutput else { return }; self.finish(self.url) }
     }
-    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) { DispatchQueue.main.async { [weak self] in self?.fail(error) } }
-    func stream(_ stream: SCStream, didStopWithError error: Error) { DispatchQueue.main.async { [weak self] in self?.fail(error) } }
+    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) { DispatchQueue.main.async { [weak self] in guard self?.output === recordingOutput else { return }; self?.fail(error) } }
+    func stream(_ stream: SCStream, didStopWithError error: Error) { DispatchQueue.main.async { [weak self] in guard self?.stream === stream else { return }; self?.fail(error) } }
     private func fail(_ error: Error) {
         guard busy else { return }
         let active = stream; finish(nil)
@@ -106,7 +106,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     }
     private func finish(_ result: URL?) {
         timer?.invalidate(); timer = nil; stream = nil; output = nil; url = nil; busy = false; recording = false
-        onStatus?(nil); QuickAccess.restore()
+        onStatus?(nil); QuickAccess.resume()
         let completion = didFinish; didFinish = nil; completion?(result)
     }
 }
