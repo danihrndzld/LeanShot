@@ -11,5 +11,6 @@
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>LSUIElement</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key><string>LeanShot records your microphone when you enable microphone audio for a screen recording.</string>
 </dict>
 </plist>

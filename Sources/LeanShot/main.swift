@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 ("Restore Quick Access", #selector(restoreOverlay)),
                                 ("Hide Quick Access", #selector(hideOverlay)),
                                 ("Capture History…", #selector(history)),
+                                ("All-in-One / Frozen Area…", #selector(captureFrozen)),
+                                ("Record Area…", #selector(recordArea)),
+                                ("Record Window…", #selector(recordWindow)),
                                 ("Open Image…", #selector(openImage)),
                                 ("Settings…", #selector(settings)),
                                 ("Open Captures Folder", #selector(openFolder))] {
@@ -47,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit LeanShot", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
+        if #available(macOS 15.0, *) {
+            Recorder.shared.onStatus = { [weak self] status in
+                guard let self else { return }
+                self.statusItem.length = status == nil ? NSStatusItem.squareLength : NSStatusItem.variableLength
+                self.statusItem.button?.title = status ?? ""
+                self.statusItem.button?.image = NSImage(systemSymbolName: status == nil ? "camera.viewfinder" : "record.circle", accessibilityDescription: status == nil ? "LeanShot" : "Recording")
+                self.recordItem?.title = status == nil ? "Record Screen" : "Stop Recording"
+            }
+        }
 
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     }
@@ -58,6 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Toggle. screencapture rejects -v with -i, so this records the whole main display.
     // ponytail: full-screen only; region recording needs SCStream + SCRecordingOutput.
     @objc func recordScreen() {
+        if #available(macOS 15.0, *) {
+            if Recorder.shared.busy { Recorder.shared.stop() }
+            else { Recorder.shared.startDisplay { [weak self] in self?.recordingFinished($0) } }
+            return
+        }
         if let p = Capture.current {
             if p.isRunning, p.arguments?.contains("-v") == true { p.interrupt() } else { NSSound.beep() }
             return
@@ -67,6 +84,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shoot(["-v", "-D", "1"], ext: "mov") { [weak self] in
             self?.recordItem?.title = "Record Screen"
             self?.statusItem.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "LeanShot")
+        }
+    }
+    @objc func recordArea() {
+        guard #available(macOS 15.0, *) else { return Toast.show("Area recording requires macOS 15+") }
+        guard !Recorder.shared.busy else { return NSSound.beep() }
+        RegionSelector.choose { [weak self] region, _ in
+            if let region { Recorder.shared.startDisplay(region: region) { [weak self] in self?.recordingFinished($0) } }
+        }
+    }
+    @objc func recordWindow() {
+        if #available(macOS 15.0, *) { Recorder.shared.chooseWindow { [weak self] in self?.recordingFinished($0) } }
+        else { Toast.show("Window recording requires macOS 15+") }
+    }
+    private func recordingFinished(_ url: URL?) {
+        guard let url else { return }; lastCapture = url; QuickAccess.show(url)
+    }
+    @objc func captureFrozen() {
+        RegionSelector.choose { [weak self] _, image in
+            guard let image, let data = ImageTools.png(image) else { return }
+            let url = Capture.newURL("png")
+            do { try data.write(to: url, options: .atomic); self?.lastCapture = url; if Settings.copyOnCapture { Clipboard.copy(url) }; QuickAccess.show(url) }
+            catch { NSAlert(error: error).runModal() }
         }
     }
 
