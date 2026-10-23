@@ -20,6 +20,10 @@ enum Settings {
     static var cameraSize: CGFloat { get { let v = defaults.double(forKey: "cameraSize"); return v > 0 ? v : 180 } set { defaults.set(newValue, forKey: "cameraSize") } }
     static var cameraCircle: Bool { get { defaults.object(forKey: "cameraCircle") as? Bool ?? true } set { defaults.set(newValue, forKey: "cameraCircle") } }
     static var keysLight: Bool { get { defaults.bool(forKey: "keysLight") } set { defaults.set(newValue, forKey: "keysLight") } }
+    static var keysCorner: Int { get { defaults.integer(forKey: "keysCorner") } set { defaults.set(newValue, forKey: "keysCorner") } }
+    static var keysSize: CGFloat { get { let v = defaults.double(forKey: "keysSize"); return v > 0 ? v : 23 } set { defaults.set(newValue, forKey: "keysSize") } }
+    static var cameraFullscreen: Bool { get { defaults.bool(forKey: "cameraFullscreen") } set { defaults.set(newValue, forKey: "cameraFullscreen") } }
+    static var hideDesktop: Bool { get { defaults.bool(forKey: "hideDesktop") } set { defaults.set(newValue, forKey: "hideDesktop") } }
     static var saveFolder: URL {
         get {
             if let path = defaults.string(forKey: "saveFolder") { return URL(fileURLWithPath: path, isDirectory: true) }
@@ -65,9 +69,13 @@ final class SettingsWindow: NSWindow {
         popup("Camera position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.cameraCorner) { Settings.cameraCorner = $0 }
         popup("Camera size", ["Small", "Medium", "Large"], [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }
         toggle("Circular camera frame", Settings.cameraCircle) { Settings.cameraCircle = $0 }
+        toggle("Fullscreen camera", Settings.cameraFullscreen) { Settings.cameraFullscreen = $0 }
         toggle("Show keystrokes (display / area, Accessibility)", Settings.recordKeystrokes) { Settings.recordKeystrokes = $0 }
         toggle("Show only shortcuts with ⌘ / ⌃ / ⌥", Settings.commandKeysOnly) { Settings.commandKeysOnly = $0 }
         toggle("Light keystroke style", Settings.keysLight) { Settings.keysLight = $0 }
+        popup("Keystroke position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.keysCorner) { Settings.keysCorner = $0 }
+        popup("Keystroke size", ["Small", "Medium", "Large"], [17, 23, 30].firstIndex(of: Int(Settings.keysSize)) ?? 1) { Settings.keysSize = CGFloat([17, 23, 30][$0]) }
+        toggle("Hide desktop icons while recording", Settings.hideDesktop) { Settings.hideDesktop = $0 }
         toggle("Launch at login", SMAppService.mainApp.status == .enabled) { enabled in
             do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
             catch { NSAlert(error: error).runModal() }

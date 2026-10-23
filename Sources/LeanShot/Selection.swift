@@ -16,11 +16,14 @@ final class RegionSelector: NSWindow {
     private static var current: RegionSelector?
     static var isSelecting = false
 
-    static func choose(completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
+    static func choose(size: CGSize? = nil, completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
         guard !isSelecting, Capture.current == nil else { NSSound.beep(); return }
         isSelecting = true; QuickAccess.hide()
         let pointer = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { isSelecting = false; completion(nil, nil); return }
+        if let size, size.width > screen.frame.width || size.height > screen.frame.height {
+            isSelecting = false; QuickAccess.resume(); Toast.show("The requested dimensions must fit on this display"); completion(nil, nil); return
+        }
         let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
         Task { @MainActor in
             do {
@@ -36,6 +39,7 @@ final class RegionSelector: NSWindow {
                 w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                 let v = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size)); v.image = image
                 if let encoded = Settings.defaults.string(forKey: "lastRegion.\(displayID)") { v.selection = NSRectFromString(encoded) }
+                v.fixedSize = size
                 v.finish = { [weak w] rect in
                     let region = rect.map { ScreenRegion(screen: screen, rect: $0) }
                     let shot = rect.map { ImageTools.crop(image, to: $0) }
@@ -53,16 +57,26 @@ final class RegionSelector: NSWindow {
 private final class SelectionView: NSView {
     var image: NSImage?
     var selection = CGRect.zero
+    var fixedSize: CGSize? {
+        didSet { if let fixedSize { selection = CGRect(x: (bounds.width - fixedSize.width) / 2, y: (bounds.height - fixedSize.height) / 2, width: fixedSize.width, height: fixedSize.height) } }
+    }
     var finish: ((CGRect?) -> Void)?
     private var start = CGPoint.zero
     private var pointer = CGPoint.zero
     private var magnifier = true
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
-    override func mouseMoved(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); needsDisplay = true }
-    override func mouseDown(with event: NSEvent) { start = convert(event.locationInWindow, from: nil); selection = .zero }
+    override func mouseMoved(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); updateFixedSelection(); needsDisplay = true }
+    private func updateFixedSelection() {
+        if let fixedSize { selection = CGRect(x: min(max(0, pointer.x - fixedSize.width / 2), bounds.width - fixedSize.width), y: min(max(0, pointer.y - fixedSize.height / 2), bounds.height - fixedSize.height), width: fixedSize.width, height: fixedSize.height) }
+    }
+    override func mouseDown(with event: NSEvent) {
+        start = convert(event.locationInWindow, from: nil); pointer = start
+        if fixedSize != nil { updateFixedSelection() } else { selection = .zero }
+    }
     override func mouseDragged(with event: NSEvent) {
         pointer = convert(event.locationInWindow, from: nil)
+        if fixedSize != nil { updateFixedSelection(); needsDisplay = true; return }
         if event.modifierFlags.contains(.shift) {
             let edge = min(abs(pointer.x - start.x), abs(pointer.y - start.y))
             pointer.x = start.x + (pointer.x > start.x ? edge : -edge); pointer.y = start.y + (pointer.y > start.y ? edge : -edge)

@@ -6,15 +6,23 @@ import ApplicationServices
 final class RecordingDecorations {
     private var camera: NSPanel?
     private var keys: NSPanel?
+    private var desktop: NSPanel?
     private var session: AVCaptureSession?
     private var monitor: Any?
     private var keyGeneration = 0
     private let cameraQueue = DispatchQueue(label: "LeanShot.camera")
-    var windowIDs: Set<CGWindowID> { Set([camera, keys].compactMap { $0.map { CGWindowID($0.windowNumber) } }) }
+    var windowIDs: Set<CGWindowID> { Set([camera, keys, desktop].compactMap { $0.map { CGWindowID($0.windowNumber) } }) }
 
     @MainActor func prepare(screen: NSScreen?, region: CGRect?) async throws {
         let bounds = region ?? screen?.visibleFrame ?? .zero
         if Settings.recordKeystrokes, !AXIsProcessTrusted() { throw Self.error("Enable LeanShot in System Settings → Privacy & Security → Accessibility to show keystrokes, or disable keystrokes in LeanShot Settings.") }
+        if Settings.hideDesktop, let screen {
+            let panel = Self.panel(screen.frame); panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+            panel.ignoresMouseEvents = true; panel.backgroundColor = .windowBackgroundColor
+            let image = NSImageView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            if let url = NSWorkspace.shared.desktopImageURL(for: screen) { image.image = NSImage(contentsOf: url) }
+            image.imageScaling = .scaleAxesIndependently; panel.contentView = image; panel.orderFrontRegardless(); desktop = panel
+        }
         if Settings.recordCamera {
             guard await AVCaptureDevice.requestAccess(for: .video) else { throw Self.error("Enable Camera access in System Settings or disable camera recording in LeanShot Settings.") }
             let cameraSession: AVCaptureSession = try await withCheckedThrowingContinuation { continuation in
@@ -31,20 +39,23 @@ final class RecordingDecorations {
             session = cameraSession
             let size = min(Settings.cameraSize, min(bounds.width, bounds.height) * 0.45)
             let right = Settings.cameraCorner % 2 == 1, top = Settings.cameraCorner >= 2
-            let rect = NSRect(x: right ? bounds.maxX - size - 20 : bounds.minX + 20, y: top ? bounds.maxY - size - 20 : bounds.minY + 20, width: size, height: size)
+            let rect = Settings.cameraFullscreen ? bounds : NSRect(x: right ? bounds.maxX - size - 20 : bounds.minX + 20, y: top ? bounds.maxY - size - 20 : bounds.minY + 20, width: size, height: size)
             let panel = Self.panel(rect)
             let view = CameraPreview(frame: NSRect(origin: .zero, size: rect.size))
-            view.wantsLayer = true; view.layer?.cornerRadius = Settings.cameraCircle ? size / 2 : 18; view.layer?.masksToBounds = true
+            view.wantsLayer = true; view.layer?.cornerRadius = Settings.cameraFullscreen ? 0 : Settings.cameraCircle ? size / 2 : 18; view.layer?.masksToBounds = true
             view.preview.session = cameraSession; view.preview.videoGravity = .resizeAspectFill
             panel.contentView = view; panel.isMovableByWindowBackground = true; panel.orderFrontRegardless(); camera = panel
         }
         if Settings.recordKeystrokes {
-            let panel = Self.panel(NSRect(x: bounds.midX - 120, y: bounds.minY + 24, width: 240, height: 48))
+            let width = min(300, max(100, bounds.width - 40)), height = Settings.keysSize + 25
+            let right = Settings.keysCorner % 2 == 1, top = Settings.keysCorner >= 2
+            let rect = NSRect(x: right ? bounds.maxX - width - 20 : bounds.minX + 20, y: top ? bounds.maxY - height - 24 : bounds.minY + 24, width: width, height: height)
+            let panel = Self.panel(rect)
             panel.ignoresMouseEvents = true
             let label = NSTextField(labelWithString: "Shortcuts")
-            label.frame = NSRect(x: 12, y: 8, width: 216, height: 32); label.font = .systemFont(ofSize: 23, weight: .medium); label.alignment = .center
+            label.frame = NSRect(x: 12, y: 8, width: width - 24, height: height - 16); label.font = .systemFont(ofSize: Settings.keysSize, weight: .medium); label.alignment = .center
             label.textColor = Settings.keysLight ? .black : .white
-            let view = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 48)); view.wantsLayer = true
+            let view = NSView(frame: NSRect(origin: .zero, size: rect.size)); view.wantsLayer = true
             view.layer?.backgroundColor = (Settings.keysLight ? NSColor.white : NSColor.black).withAlphaComponent(0.85).cgColor; view.layer?.cornerRadius = 12
             view.addSubview(label); panel.contentView = view; panel.orderFrontRegardless(); keys = panel
             monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self, weak label] event in
@@ -67,6 +78,7 @@ final class RecordingDecorations {
         keyGeneration += 1
         camera?.orderOut(nil); camera?.contentView = nil; camera = nil
         keys?.orderOut(nil); keys?.contentView = nil; keys = nil
+        desktop?.orderOut(nil); desktop?.contentView = nil; desktop = nil
         if let session { self.session = nil; cameraQueue.async { session.stopRunning() } }
     }
     private static func panel(_ rect: NSRect) -> NSPanel {
