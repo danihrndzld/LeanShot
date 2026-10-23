@@ -2,16 +2,16 @@ import AppKit
 import Vision
 
 enum Capture {
-    static let folder: URL = {
-        let url = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0].appendingPathComponent("LeanShot")
+    static var folder: URL {
+        let url = Settings.saveFolder
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
-    }()
+    }
 
     static func newURL(_ ext: String) -> URL {
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return folder.appendingPathComponent("LeanShot \(f.string(from: Date())).\(ext)")
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss.SSS"
+        return folder.appendingPathComponent("LeanShot \(f.string(from: Date()))-\(UUID().uuidString.prefix(4)).\(ext)")
     }
 
     static func tempURL(_ ext: String) -> URL {
@@ -54,16 +54,40 @@ enum Clipboard {
 }
 
 enum OCR {
+    static func textRects(_ image: NSImage, completion: @escaping ([CGRect]) -> Void) {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { completion([]); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let request = VNRecognizeTextRequest(); request.recognitionLevel = .fast; request.usesLanguageCorrection = false
+            do {
+                try VNImageRequestHandler(cgImage: cg).perform([request])
+                let rects = (request.results ?? []).map(\.boundingBox)
+                DispatchQueue.main.async { completion(rects) }
+            } catch { DispatchQueue.main.async { completion([]) } }
+        }
+    }
+    static func copyContents(_ url: URL) {
+        guard let image = NSImage(contentsOf: url) else { return }
+        recognize(image) { text in
+            guard !text.isEmpty else { return Toast.show("No text or QR code found") }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            Toast.show("Copied \(text.count) characters")
+        }
+    }
     static func recognize(_ image: NSImage, completion: @escaping (String) -> Void) {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return completion("") }
-        let request = VNRecognizeTextRequest { req, _ in
-            let lines = (req.results as? [VNRecognizedTextObservation] ?? []).compactMap { $0.topCandidates(1).first?.string }
-            DispatchQueue.main.async { completion(lines.joined(separator: "\n")) }
-        }
+        let request = VNRecognizeTextRequest()
+        let codes = VNDetectBarcodesRequest()
         request.recognitionLevel = .accurate
         request.automaticallyDetectsLanguage = true
         DispatchQueue.global(qos: .userInitiated).async {
-            do { try VNImageRequestHandler(cgImage: cg).perform([request]) } catch { DispatchQueue.main.async { completion("") } }
+            do {
+                try VNImageRequestHandler(cgImage: cg).perform([request, codes])
+                var lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                for value in (codes.results ?? []).compactMap(\.payloadStringValue) where !lines.contains(value) { lines.append(value) }
+                let text = lines.joined(separator: "\n")
+                DispatchQueue.main.async { completion(text) }
+            } catch { DispatchQueue.main.async { completion("") } }
         }
     }
 }

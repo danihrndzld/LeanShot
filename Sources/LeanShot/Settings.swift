@@ -1,0 +1,132 @@
+import AppKit
+import ServiceManagement
+
+enum Settings {
+    static let defaults = UserDefaults.standard
+    static var corner: Int { get { defaults.integer(forKey: "overlayCorner") } set { defaults.set(newValue, forKey: "overlayCorner") } }
+    static var overlayWidth: CGFloat { get { let v = defaults.double(forKey: "overlayWidth"); return v > 0 ? v : 280 } set { defaults.set(newValue, forKey: "overlayWidth") } }
+    static var autoClose: Double { get { defaults.double(forKey: "overlayAutoClose") } set { defaults.set(newValue, forKey: "overlayAutoClose") } }
+    static var copyOnCapture: Bool { get { defaults.object(forKey: "copyOnCapture") as? Bool ?? true } set { defaults.set(newValue, forKey: "copyOnCapture") } }
+    static var windowShadow: Bool { get { defaults.object(forKey: "windowShadow") as? Bool ?? true } set { defaults.set(newValue, forKey: "windowShadow") } }
+    static var captureCursor: Bool { get { defaults.bool(forKey: "captureCursor") } set { defaults.set(newValue, forKey: "captureCursor") } }
+    static var recordingFPS: Int { get { defaults.integer(forKey: "recordingFPS") == 60 ? 60 : 30 } set { defaults.set(newValue, forKey: "recordingFPS") } }
+    static var recordingAudio: Bool { get { defaults.bool(forKey: "recordingAudio") } set { defaults.set(newValue, forKey: "recordingAudio") } }
+    static var recordingMicrophone: Bool { get { defaults.bool(forKey: "recordingMicrophone") } set { defaults.set(newValue, forKey: "recordingMicrophone") } }
+    static var recordCamera: Bool { get { defaults.bool(forKey: "recordCamera") } set { defaults.set(newValue, forKey: "recordCamera") } }
+    static var recordKeystrokes: Bool { get { defaults.bool(forKey: "recordKeystrokes") } set { defaults.set(newValue, forKey: "recordKeystrokes") } }
+    static var commandKeysOnly: Bool { get { defaults.object(forKey: "commandKeysOnly") as? Bool ?? true } set { defaults.set(newValue, forKey: "commandKeysOnly") } }
+    static var recordClicks: Bool { get { defaults.bool(forKey: "recordClicks") } set { defaults.set(newValue, forKey: "recordClicks") } }
+    static var cameraCorner: Int { get { defaults.object(forKey: "cameraCorner") as? Int ?? 1 } set { defaults.set(newValue, forKey: "cameraCorner") } }
+    static var cameraSize: CGFloat { get { let v = defaults.double(forKey: "cameraSize"); return v > 0 ? v : 180 } set { defaults.set(newValue, forKey: "cameraSize") } }
+    static var cameraCircle: Bool { get { defaults.object(forKey: "cameraCircle") as? Bool ?? true } set { defaults.set(newValue, forKey: "cameraCircle") } }
+    static var keysLight: Bool { get { defaults.bool(forKey: "keysLight") } set { defaults.set(newValue, forKey: "keysLight") } }
+    static var keysCorner: Int { get { defaults.integer(forKey: "keysCorner") } set { defaults.set(newValue, forKey: "keysCorner") } }
+    static var keysSize: CGFloat { get { let v = defaults.double(forKey: "keysSize"); return v > 0 ? v : 23 } set { defaults.set(newValue, forKey: "keysSize") } }
+    static var cameraFullscreen: Bool { get { defaults.bool(forKey: "cameraFullscreen") } set { defaults.set(newValue, forKey: "cameraFullscreen") } }
+    static var hideDesktop: Bool { get { defaults.bool(forKey: "hideDesktop") } set { defaults.set(newValue, forKey: "hideDesktop") } }
+    static var clickColor: Int { get { defaults.integer(forKey: "clickColor") } set { defaults.set(newValue, forKey: "clickColor") } }
+    static var clickSize: CGFloat { get { let v = defaults.double(forKey: "clickSize"); return v > 0 ? v : 40 } set { defaults.set(newValue, forKey: "clickSize") } }
+    static var clickFilled: Bool { get { defaults.bool(forKey: "clickFilled") } set { defaults.set(newValue, forKey: "clickFilled") } }
+    static var clickAnimated: Bool { get { defaults.object(forKey: "clickAnimated") as? Bool ?? true } set { defaults.set(newValue, forKey: "clickAnimated") } }
+    static var recordingResolution: Int { get { let v = defaults.integer(forKey: "recordingResolution"); return [1280, 1920, 3840].contains(v) ? v : 3840 } set { defaults.set(newValue, forKey: "recordingResolution") } }
+    static var focusEnabled: Bool { get { defaults.bool(forKey: "focusEnabled") } set { defaults.set(newValue, forKey: "focusEnabled") } }
+    static var saveFolder: URL {
+        get {
+            if let path = defaults.string(forKey: "saveFolder") { return URL(fileURLWithPath: path, isDirectory: true) }
+            return FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0].appendingPathComponent("LeanShot")
+        }
+        set { defaults.set(newValue.path, forKey: "saveFolder") }
+    }
+}
+
+final class SettingsWindow: NSWindow {
+    private static var instance: SettingsWindow?
+    static func show() {
+        if let w = instance { NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil); return }
+        let w = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "LeanShot Settings"
+        w.isReleasedWhenClosed = false
+        let stack = NSStackView()
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
+        stack.frame = NSRect(x: 28, y: 24, width: 424, height: 508)
+        func toggle(_ title: String, _ value: Bool, _ change: @escaping (Bool) -> Void) {
+            let b = ClosureButton(frame: .zero) {}
+            b.setButtonType(.switch); b.title = title; b.state = value ? .on : .off
+            b.setHandler { [weak b] in change(b?.state == .on) }
+            stack.addArrangedSubview(b)
+        }
+        func popup(_ title: String, _ choices: [String], _ selected: Int, _ change: @escaping (Int) -> Void) {
+            let row = NSStackView(); row.spacing = 12
+            row.addArrangedSubview(NSTextField(labelWithString: title))
+            let p = ClosurePopup(choices: choices, selected: selected, change: change)
+            row.addArrangedSubview(p); stack.addArrangedSubview(row)
+        }
+        toggle("Copy captures to clipboard", Settings.copyOnCapture) { Settings.copyOnCapture = $0 }
+        toggle("Include window shadows", Settings.windowShadow) { Settings.windowShadow = $0 }
+        toggle("Include pointer in screenshots / recordings", Settings.captureCursor) { Settings.captureCursor = $0 }
+        popup("Overlay position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.corner) { Settings.corner = $0 }
+        popup("Thumbnail size", ["Small", "Medium", "Large"], [220, 280, 340].firstIndex(of: Int(Settings.overlayWidth)) ?? 1) { Settings.overlayWidth = CGFloat([220, 280, 340][$0]) }
+        popup("Close overlays", ["Manually", "After 10 seconds", "After 30 seconds", "After 60 seconds"], [0.0, 10, 30, 60].firstIndex(of: Settings.autoClose) ?? 0) { Settings.autoClose = [0, 10, 30, 60][$0] }
+        popup("Recording frame rate", ["30 fps", "60 fps"], Settings.recordingFPS == 60 ? 1 : 0) { Settings.recordingFPS = $0 == 1 ? 60 : 30 }
+        popup("Recording resolution limit", ["1280 px", "1920 px", "3840 px (4K)"], [1280, 1920, 3840].firstIndex(of: Settings.recordingResolution) ?? 2) { Settings.recordingResolution = [1280, 1920, 3840][$0] }
+        toggle("Record computer audio", Settings.recordingAudio) { Settings.recordingAudio = $0 }
+        toggle("Record microphone (macOS 15+)", Settings.recordingMicrophone) { Settings.recordingMicrophone = $0 }
+        toggle("Show clicks in recordings (macOS 15+)", Settings.recordClicks) { Settings.recordClicks = $0 }
+        popup("Click color (display / area)", ["Pink", "Blue", "Green", "Yellow", "White"], Settings.clickColor) { Settings.clickColor = $0 }
+        popup("Click size", ["Small", "Medium", "Large"], [24, 40, 64].firstIndex(of: Int(Settings.clickSize)) ?? 1) { Settings.clickSize = CGFloat([24, 40, 64][$0]) }
+        toggle("Filled click circles", Settings.clickFilled) { Settings.clickFilled = $0 }
+        toggle("Animate click circles", Settings.clickAnimated) { Settings.clickAnimated = $0 }
+        toggle("Record camera (display / area, macOS 15+)", Settings.recordCamera) { Settings.recordCamera = $0 }
+        popup("Camera position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.cameraCorner) { Settings.cameraCorner = $0 }
+        popup("Camera size", ["Small", "Medium", "Large"], [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }
+        toggle("Circular camera frame", Settings.cameraCircle) { Settings.cameraCircle = $0 }
+        toggle("Fullscreen camera", Settings.cameraFullscreen) { Settings.cameraFullscreen = $0 }
+        toggle("Show keystrokes (display / area, Accessibility)", Settings.recordKeystrokes) { Settings.recordKeystrokes = $0 }
+        toggle("Show only shortcuts with ⌘ / ⌃ / ⌥", Settings.commandKeysOnly) { Settings.commandKeysOnly = $0 }
+        toggle("Light keystroke style", Settings.keysLight) { Settings.keysLight = $0 }
+        popup("Keystroke position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.keysCorner) { Settings.keysCorner = $0 }
+        popup("Keystroke size", ["Small", "Medium", "Large"], [17, 23, 30].firstIndex(of: Int(Settings.keysSize)) ?? 1) { Settings.keysSize = CGFloat([17, 23, 30][$0]) }
+        toggle("Hide desktop icons while recording", Settings.hideDesktop) { Settings.hideDesktop = $0 }
+        toggle("Use Focus shortcuts while recording", Settings.focusEnabled) { Settings.focusEnabled = $0 }
+        let focus = ClosureButton(frame: .zero) { FocusAutomation.configure() }
+        focus.title = "Configure Focus Shortcuts…"; focus.bezelStyle = .rounded; stack.addArrangedSubview(focus)
+        toggle("Launch at login", SMAppService.mainApp.status == .enabled) { enabled in
+            do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
+            catch { NSAlert(error: error).runModal() }
+        }
+        let folder = ClosureButton(frame: .zero) {
+            let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
+            if p.runModal() == .OK, let url = p.url { Settings.saveFolder = url }
+        }
+        folder.title = "Choose Captures Folder…"; folder.bezelStyle = .rounded; stack.addArrangedSubview(folder)
+        let height = max(508, stack.fittingSize.height)
+        stack.frame = NSRect(x: 28, y: 24, width: 424, height: height)
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: height + 48)); doc.addSubview(stack)
+        let scroll = NSScrollView(frame: w.contentView!.bounds); scroll.documentView = doc; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.frame.height - scroll.contentSize.height)))
+        w.contentView?.addSubview(scroll)
+        w.center(); instance = w
+        NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
+    }
+}
+
+final class ClosurePopup: NSPopUpButton {
+    private let change: (Int) -> Void
+    init(choices: [String], selected: Int, change: @escaping (Int) -> Void) {
+        self.change = change
+        super.init(frame: .zero, pullsDown: false)
+        addItems(withTitles: choices); selectItem(at: selected)
+        target = self; action = #selector(changed)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func changed() { change(indexOfSelectedItem) }
+}
+
+enum CaptureHistory {
+    static func files(in folder: URL = Capture.folder) -> [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles])) ?? []
+        return urls.filter { ["png", "jpg", "jpeg", "mov", "mp4", "gif", "leanshot"].contains($0.pathExtension.lowercased()) }
+            .sorted { date($0) > date($1) }
+    }
+    private static func date(_ url: URL) -> Date { (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast }
+}

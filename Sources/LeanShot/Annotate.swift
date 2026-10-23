@@ -2,26 +2,56 @@ import AppKit
 import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
 
-enum Tool: Int, CaseIterable {
+enum Tool: Int, CaseIterable, Codable {
     case select, rect, filledRect, ellipse, line, arrow, text, pixelate, highlight, counter, pen
+    case blur, spotlight, crop, redact, image
+    static var visible: [Tool] { allCases.filter { $0 != .image } }
     var symbol: String {
         ["cursorarrow", "square", "square.fill", "circle", "line.diagonal", "arrow.up.right", "textformat",
-         "checkerboard.rectangle", "highlighter", "1.circle.fill", "pencil.tip"][rawValue]
+         "checkerboard.rectangle", "highlighter", "1.circle.fill", "pencil.tip", "drop.halffull", "light.max", "crop", "rectangle.fill", "photo"][rawValue]
     }
     var label: String {
         ["Select", "Rectangle", "Filled Rectangle", "Ellipse", "Line", "Arrow", "Text",
-         "Pixelate", "Highlight", "Counter", "Pen"][rawValue]
+         "Pixelate", "Highlight", "Counter", "Pen", "Smooth Blur", "Spotlight", "Crop", "Redact (Opaque)", "Image"][rawValue]
     }
     /// Single-key shortcut while the canvas has focus.
-    var key: String { ["v", "r", "f", "o", "l", "a", "t", "b", "h", "n", "p"][rawValue] }
+    var key: String { ["v", "r", "f", "o", "l", "a", "t", "b", "h", "n", "p", "u", "s", "c", "x", "i"][rawValue] }
 }
 
-struct Mark {
+struct Mark: Codable {
     var tool: Tool
     var points: [CGPoint]
     var color: NSColor
     var width: CGFloat
     var text = ""
+    var style = 0
+    var imageData: Data? = nil
+
+    enum CodingKeys: String, CodingKey { case tool, points, color, width, text, style, imageData }
+    init(tool: Tool, points: [CGPoint], color: NSColor, width: CGFloat, text: String = "", style: Int = 0, imageData: Data? = nil) {
+        self.tool = tool; self.points = points; self.color = color; self.width = width
+        self.text = text; self.style = style; self.imageData = imageData
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try c.decode(Tool.self, forKey: .tool); points = try c.decode([CGPoint].self, forKey: .points)
+        guard !points.isEmpty, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else { throw CocoaError(.fileReadCorruptFile) }
+        let rgba = try c.decode([CGFloat].self, forKey: .color)
+        guard rgba.count == 4, rgba.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw CocoaError(.fileReadCorruptFile) }
+        color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba[3])
+        width = try c.decode(CGFloat.self, forKey: .width)
+        guard width.isFinite, (0.1...256).contains(width), points.count >= 2 || [.text, .counter, .pen].contains(tool) else { throw CocoaError(.fileReadCorruptFile) }
+        text = try c.decode(String.self, forKey: .text); style = try c.decodeIfPresent(Int.self, forKey: .style) ?? 0
+        imageData = try c.decodeIfPresent(Data.self, forKey: .imageData)
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(tool, forKey: .tool); try c.encode(points, forKey: .points)
+        let rgb = color.usingColorSpace(.sRGB) ?? .red
+        try c.encode([rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent], forKey: .color)
+        try c.encode(width, forKey: .width); try c.encode(text, forKey: .text); try c.encode(style, forKey: .style)
+        try c.encodeIfPresent(imageData, forKey: .imageData)
+    }
 
     var rect: CGRect {
         guard let a = points.first, let b = points.last else { return .zero }
@@ -59,26 +89,54 @@ struct Mark {
 
 /// Draws the screenshot plus marks. Marks live in view coordinates; export rescales to pixels.
 final class Canvas: NSView, NSTextFieldDelegate {
-    let image: NSImage
-    private lazy var pixelated = Canvas.pixelate(image)
+    var image: NSImage { didSet { highlightRects = nil; if tool == .highlight { detectHighlightText() } } }
+    private var pixelated: NSImage?
+    private var blurred: NSImage?
     var marks: [Mark] = [] { didSet { needsDisplay = true } }
-    var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool) } }
-    var color: NSColor = .systemRed
-    var width: CGFloat = 4
+    var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool); if tool == .highlight { detectHighlightText() } } }
+    private var highlightRects: [CGRect]?
+    private func detectHighlightText() {
+        guard highlightRects == nil else { return }
+        highlightRects = []
+        let source = image
+        OCR.textRects(source) { [weak self] rects in if let self, self.image === source { self.highlightRects = rects } }
+    }
+    var color: NSColor = .systemRed { didSet { if let selected { checkpoint(); marks[selected].color = color } } }
+    var width: CGFloat = 4 { didSet { if let selected { checkpoint(); marks[selected].width = width } } }
+    var arrowStyle = 0
+    var textStyle = 0
+    var cropAspect: CGFloat = 0
+    var onImageChange: (() -> Void)?
     var onToolChange: ((Tool) -> Void)?
-    private var history: [[Mark]] = []
+    private struct State { var image: NSImage; var marks: [Mark]; var size: NSSize }
+    private var history: [State] = []
+    private var future: [State] = []
     private var selected: Int? { didSet { needsDisplay = true } }
     private var dragFrom: CGPoint?
     private var moveUnsaved = false // select-click only records undo once it actually moves
+    private var resizeCorner: Int?
     private var editor: NSTextField?
 
     init(image: NSImage, size: NSSize? = nil) {
         self.image = image
         super.init(frame: NSRect(origin: .zero, size: size ?? image.size))
+        registerForDraggedTypes([.fileURL, .tiff, .png])
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override var acceptsFirstResponder: Bool { true }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pasteboard = sender.draggingPasteboard
+        let point = convert(sender.draggingLocation, from: nil)
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
+            var inserted = false
+            for url in urls { if let image = NSImage(contentsOf: url) { insertImage(image, at: point); inserted = true } }
+            return inserted
+        }
+        if let image = NSImage(pasteboard: pasteboard) { insertImage(image, at: point); return true }
+        return false
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         render(in: bounds)
@@ -88,11 +146,25 @@ final class Canvas: NSView, NSTextFieldDelegate {
             p.lineWidth = 1.5
             NSColor.controlAccentColor.setStroke()
             p.stroke()
+            if canResize(marks[i]) {
+                for corner in corners(marks[i].rect) {
+                    NSColor.white.setFill(); NSColor.controlAccentColor.setStroke()
+                    let handle = NSBezierPath(rect: NSRect(x: corner.x - 4, y: corner.y - 4, width: 8, height: 8)); handle.fill(); handle.stroke()
+                }
+            }
         }
     }
 
     func render(in rect: NSRect) {
         image.draw(in: rect)
+        let spotlights = marks.filter { $0.tool == .spotlight }
+        if !spotlights.isEmpty, let context = NSGraphicsContext.current?.cgContext {
+            context.saveGState(); context.beginTransparencyLayer(auxiliaryInfo: nil)
+            NSColor.black.withAlphaComponent(0.62).setFill(); rect.fill()
+            context.setBlendMode(.clear)
+            spotlights.forEach { NSBezierPath(roundedRect: $0.rect, xRadius: 6, yRadius: 6).fill() }
+            context.setBlendMode(.normal); context.endTransparencyLayer(); context.restoreGState()
+        }
         var counter = 0
         for m in marks {
             if m.tool == .counter { counter += 1 }
@@ -103,8 +175,15 @@ final class Canvas: NSView, NSTextFieldDelegate {
     private func draw(_ m: Mark, imageRect: NSRect, number: Int) {
         m.color.set()
         switch m.tool {
-        case .select:
+        case .select, .spotlight:
             break
+        case .crop:
+            NSColor.controlAccentColor.setStroke()
+            let p = NSBezierPath(rect: m.rect); p.lineWidth = 2; p.stroke()
+        case .redact:
+            NSColor.black.setFill(); m.rect.fill()
+        case .image:
+            if let data = m.imageData, let image = NSImage(data: data) { image.draw(in: m.rect) }
         case .rect, .ellipse:
             let p = m.tool == .rect ? NSBezierPath(roundedRect: m.rect, xRadius: 3, yRadius: 3) : NSBezierPath(ovalIn: m.rect)
             p.lineWidth = m.width
@@ -114,25 +193,66 @@ final class Canvas: NSView, NSTextFieldDelegate {
         case .highlight:
             m.color.withAlphaComponent(0.35).set()
             m.rect.fill(using: .multiply)
-        case .pixelate:
+        case .pixelate, .blur:
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: m.rect).addClip()
-            pixelated.draw(in: imageRect)
+            if m.tool == .pixelate {
+                if pixelated == nil { pixelated = Canvas.pixelate(image) }
+                pixelated?.draw(in: imageRect)
+            } else {
+                if blurred == nil {
+                    if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                        let input = CIImage(cgImage: cg)
+                        let output = input.clampedToExtent().applyingGaussianBlur(sigma: 18).cropped(to: input.extent)
+                        if let result = CIContext().createCGImage(output, from: input.extent) { blurred = NSImage(cgImage: result, size: image.size) }
+                    }
+                }
+                blurred?.draw(in: imageRect)
+            }
             NSGraphicsContext.restoreGraphicsState()
         case .pen, .line:
             guard let first = m.points.first else { return }
             let p = NSBezierPath()
             p.move(to: first)
-            m.points.dropFirst().forEach { p.line(to: $0) }
+            if m.tool == .pen, m.points.count > 2 {
+                for i in 1..<m.points.count - 1 {
+                    let a = m.points[i], b = m.points[i + 1]
+                    let end = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                    p.curve(to: end, controlPoint1: a, controlPoint2: a)
+                }
+                p.line(to: m.points.last!)
+            } else { m.points.dropFirst().forEach { p.line(to: $0) } }
             p.lineWidth = m.width
             p.lineCapStyle = .round
             p.lineJoinStyle = .round
             p.stroke()
         case .arrow:
             guard let a = m.points.first, let b = m.points.last, a != b else { return }
-            Canvas.arrowPath(from: a, to: b, width: m.width).fill()
+            if m.style == 1 { // Curved arrow with a tangent-aligned head.
+                let mid = CGPoint(x: (a.x + b.x) / 2 - (b.y - a.y) * 0.32, y: (a.y + b.y) / 2 + (b.x - a.x) * 0.32)
+                let path = NSBezierPath(); path.move(to: a); path.curve(to: b, controlPoint1: mid, controlPoint2: mid)
+                path.lineWidth = m.width; path.lineCapStyle = .round; path.stroke()
+                let length = max(1, hypot(b.x - mid.x, b.y - mid.y)), head = min(length, max(16, m.width * 4))
+                let start = CGPoint(x: b.x - (b.x - mid.x) / length * head, y: b.y - (b.y - mid.y) / length * head)
+                Canvas.arrowPath(from: start, to: b, width: m.width).fill()
+            } else {
+                let path = Canvas.arrowPath(from: a, to: b, width: m.width)
+                if m.style == 3 { path.lineWidth = 1.5; path.stroke() } else { path.fill() }
+                if m.style == 2 { Canvas.arrowPath(from: b, to: a, width: m.width).fill() }
+            }
         case .text:
-            (m.text as NSString).draw(at: m.points[0], withAttributes: Mark.textAttributes(m.color, m.width))
+            var attrs = Mark.textAttributes(m.color, m.width)
+            if m.style > 0 { attrs[.strokeWidth] = 0 }
+            if m.style == 2 { attrs[.font] = NSFont.monospacedSystemFont(ofSize: 12 + m.width * 3, weight: .medium) }
+            if m.style == 3 { attrs[.font] = NSFont.systemFont(ofSize: 12 + m.width * 3, weight: .regular) }
+            if m.style >= 4 {
+                let size = (m.text as NSString).size(withAttributes: attrs)
+                let box = NSRect(origin: m.points[0], size: size).insetBy(dx: -8, dy: -4)
+                (m.style == 4 ? NSColor.white : m.style == 5 ? NSColor.black : m.color).setFill()
+                NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5).fill()
+                attrs[.foregroundColor] = m.style == 4 ? NSColor.black : NSColor.white
+            }
+            (m.text as NSString).draw(at: m.points[0], withAttributes: attrs)
         case .counter:
             let d = Mark.counterDiameter(m.width), c = m.points[0]
             NSBezierPath(ovalIn: NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)).fill()
@@ -178,13 +298,31 @@ final class Canvas: NSView, NSTextFieldDelegate {
 
     // MARK: Editing
 
-    private func checkpoint() { history.append(marks) }
+    private var state: State { State(image: image, marks: marks, size: bounds.size) }
+    private func canResize(_ mark: Mark) -> Bool { ![.pen, .text, .counter, .arrow, .line].contains(mark.tool) }
+    private func corners(_ rect: CGRect) -> [CGPoint] { [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)] }
+    private func checkpoint() { history.append(state); future.removeAll() }
+    private func restore(_ state: State) {
+        image = state.image; marks = state.marks; setFrameSize(state.size)
+        pixelated = nil; blurred = nil; selected = nil; dragFrom = nil; onImageChange?()
+    }
 
     func undo() {
         guard let last = history.popLast() else { return NSSound.beep() }
-        selected = nil
-        dragFrom = nil
-        marks = last
+        future.append(state); restore(last)
+    }
+    func redo() { guard let next = future.popLast() else { return NSSound.beep() }; history.append(state); restore(next) }
+    func replaceImage(_ newImage: NSImage) {
+        checkpoint(); image = newImage; marks = []; setFrameSize(newImage.size)
+        pixelated = nil; blurred = nil; selected = nil; onImageChange?(); needsDisplay = true
+    }
+    func insertImage(_ image: NSImage, at point: CGPoint? = nil) {
+        commitText(); checkpoint()
+        let scale = min(1, bounds.width * 0.65 / image.size.width, bounds.height * 0.65 / image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let origin = point ?? CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2)
+        marks.append(Mark(tool: .image, points: [origin, CGPoint(x: origin.x + size.width, y: origin.y + size.height)], color: .clear, width: 1, imageData: ImageTools.png(image)))
+        tool = .select; selected = marks.count - 1
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -193,6 +331,10 @@ final class Canvas: NSView, NSTextFieldDelegate {
         let p = convert(event.locationInWindow, from: nil)
         switch tool {
         case .select:
+            if let selected, canResize(marks[selected]), let corner = corners(marks[selected].rect).firstIndex(where: { hypot($0.x - p.x, $0.y - p.y) < 10 }) {
+                resizeCorner = corner; dragFrom = p; moveUnsaved = true; return
+            }
+            resizeCorner = nil
             selected = marks.indices.last { marks[$0].bounds.contains(p) }
             if selected != nil { dragFrom = p; moveUnsaved = true }
         case .text:
@@ -202,17 +344,29 @@ final class Canvas: NSView, NSTextFieldDelegate {
             marks.append(Mark(tool: .counter, points: [p], color: color, width: width))
         default:
             checkpoint()
-            marks.append(Mark(tool: tool, points: [p, p], color: color, width: width))
+            marks.append(Mark(tool: tool, points: [p, p], color: color, width: width, style: arrowStyle))
             dragFrom = p
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let from = dragFrom else { return }
-        let p = convert(event.locationInWindow, from: nil)
+        var p = convert(event.locationInWindow, from: nil)
+        if tool == .crop {
+            p.x = min(max(0, p.x), bounds.width); p.y = min(max(0, p.y), bounds.height)
+            let aspect = cropAspect > 0 ? cropAspect : event.modifierFlags.contains(.shift) ? 1 : 0
+            if aspect > 0 { p.y = from.y + (p.y >= from.y ? 1 : -1) * abs(p.x - from.x) / aspect }
+        }
         if tool == .select, let i = selected {
             if moveUnsaved { checkpoint(); moveUnsaved = false }
-            marks[i].move(by: p.x - from.x, p.y - from.y)
+            if let corner = resizeCorner {
+                let opposite = corners(marks[i].rect)[(corner + 2) % 4]
+                if marks[i].tool == .image || event.modifierFlags.contains(.shift) {
+                    let ratio = marks[i].rect.width / max(1, marks[i].rect.height)
+                    p.y = opposite.y + (p.y > opposite.y ? 1 : -1) * abs(p.x - opposite.x) / ratio
+                }
+                if abs(p.x - opposite.x) > 2, abs(p.y - opposite.y) > 2 { marks[i].points = [opposite, p] }
+            } else { marks[i].move(by: p.x - from.x, p.y - from.y) }
             dragFrom = p
         } else if tool == .pen {
             marks[marks.count - 1].points.append(p)
@@ -222,7 +376,24 @@ final class Canvas: NSView, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { dragFrom = nil }
+        defer { dragFrom = nil; resizeCorner = nil }
+        if tool == .highlight, let mark = marks.last, mark.tool == .highlight, let highlightRects {
+            let boxes = highlightRects.map { CGRect(x: $0.minX * bounds.width, y: $0.minY * bounds.height, width: $0.width * bounds.width, height: $0.height * bounds.height) }.filter { $0.intersects(mark.rect) }
+            if let first = boxes.first {
+                let line = boxes.dropFirst().reduce(first) { $0.union($1) }
+                marks[marks.count - 1].points = [CGPoint(x: mark.rect.minX, y: line.minY - 1), CGPoint(x: mark.rect.maxX, y: line.maxY + 1)]
+            }
+        }
+        if tool == .crop, let m = marks.last, m.tool == .crop {
+            marks.removeLast()
+            if m.rect.width > 1, m.rect.height > 1 {
+                let flat = export()
+                let r = CGRect(x: m.rect.minX / bounds.width * flat.size.width, y: m.rect.minY / bounds.height * flat.size.height, width: m.rect.width / bounds.width * flat.size.width, height: m.rect.height / bounds.height * flat.size.height)
+                image = ImageTools.crop(flat, to: r); marks = []; setFrameSize(image.size)
+                pixelated = nil; blurred = nil; onImageChange?()
+            } else { _ = history.popLast() }
+            needsDisplay = true; return
+        }
         // A click without a drag leaves an empty shape behind; drop it.
         if dragFrom != nil, tool != .select, let m = marks.last, m.points.count == 2, m.points[0] == m.points[1] {
             marks.removeLast()
@@ -268,7 +439,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
         guard !f.stringValue.isEmpty else { return }
         checkpoint()
         marks.append(Mark(tool: .text, points: [CGPoint(x: f.frame.minX + 2, y: f.frame.minY)], color: color, width: width,
-                          text: f.stringValue))
+                          text: f.stringValue, style: textStyle))
         window?.makeFirstResponder(self)
     }
 
@@ -301,8 +472,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
     }
 
     func pngData() -> Data? {
-        guard let tiff = export().tiffRepresentation else { return nil }
-        return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        ImageTools.png(export())
     }
 }
 
@@ -361,6 +531,7 @@ final class DragHandle: NSView, NSDraggingSource {
 private extension NSToolbarItem.Identifier {
     static let tools = Self("tools"), color = Self("color"), stroke = Self("stroke")
     static let saveAs = Self("saveAs"), done = Self("done")
+    static let edit = Self("edit")
 }
 
 final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
@@ -381,8 +552,15 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
 
     @discardableResult
     static func open(_ url: URL) -> AnnotateWindow? {
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        QuickAccess.dismiss()
+        let project: ShotProject?
+        let image: NSImage
+        do {
+            if url.pathExtension.lowercased() == "leanshot" {
+                let loaded = try ShotProject.read(url); image = try loaded.decodedImage(); project = loaded
+            } else {
+                guard let loaded = NSImage(contentsOf: url) else { return nil }; image = loaded; project = nil
+            }
+        } catch { NSAlert(error: error).runModal(); return nil }
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = NSSize(width: min(max(1040, image.size.width + 120), screen.width * 0.9),
                           height: min(max(420, image.size.height + 120 + 48), screen.height * 0.85 - 52))
@@ -393,8 +571,9 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         w.source = url
         w.isReleasedWhenClosed = false
         w.delegate = w
-        w.minSize = NSSize(width: 1040, height: 360) // narrower and the tool group collapses into »
+        w.minSize = NSSize(width: min(1040, screen.width * 0.9), height: 360)
         w.build(image: image)
+        if let project { w.canvas.setFrameSize(project.canvasSize); w.canvas.marks = project.marks; w.resizeDocument() }
         w.center()
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
@@ -407,6 +586,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     private func build(image: NSImage) {
         canvas = Canvas(image: image)
         canvas.onToolChange = { [weak self] t in self?.toolsItem?.selectedIndex = t.rawValue }
+        canvas.onImageChange = { [weak self] in self?.resizeDocument() }
         canvas.shadow = {
             let s = NSShadow()
             s.shadowBlurRadius = 18
@@ -494,7 +674,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.tools, .space, .color, .stroke, .flexibleSpace, .saveAs, .done]
+        [.tools, .color, .stroke, .edit, .flexibleSpace, .saveAs, .done]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -506,11 +686,15 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         switch id {
         case .tools:
             let group = NSToolbarItemGroup(itemIdentifier: id,
-                                           images: Tool.allCases.map { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: $0.label)! },
+                                           images: Tool.visible.map { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: $0.label) ?? NSImage(systemSymbolName: "square", accessibilityDescription: $0.label)! },
                                            selectionMode: .selectOne,
-                                           labels: Tool.allCases.map(\.label), target: self, action: #selector(pickTool))
-            for (sub, t) in zip(group.subitems, Tool.allCases) { sub.toolTip = "\(t.label) (\(t.key.uppercased()))" }
+                                           labels: Tool.visible.map(\.label), target: self, action: #selector(pickTool))
+            for (sub, t) in zip(group.subitems, Tool.visible) { sub.toolTip = "\(t.label) (\(t.key.uppercased()))" }
             group.selectedIndex = canvas.tool.rawValue
+            group.controlRepresentation = .expanded
+            if let control = group.view as? NSSegmentedControl {
+                for index in Tool.visible.indices { control.setWidth(26, forSegment: index) }
+            }
             toolsItem = group
             return group
         case .color:
@@ -525,8 +709,25 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
                 m.representedObject = c
                 item.menu.addItem(m)
             }
+            let custom = NSMenuItem(title: "Custom Color / Eyedropper…", action: #selector(customColor), keyEquivalent: "")
+            custom.target = self; item.menu.addItem(custom)
             colorItem = item
             refreshColor()
+            return item
+        case .edit:
+            let item = NSMenuToolbarItem(itemIdentifier: id)
+            item.label = "Image & Styles"; item.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "Image & Styles")
+            item.showsIndicator = true; item.menu = NSMenu()
+            let entries: [(String, Selector)] = [("Undo", #selector(undoEdit)), ("Redo", #selector(redoEdit)), ("Rotate Left", #selector(rotateLeft)), ("Rotate Right", #selector(rotateRight)), ("Flip Horizontal", #selector(flipHorizontal)), ("Flip Vertical", #selector(flipVertical)), ("Resize…", #selector(resizeImage)), ("Add Background…", #selector(background)), ("Insert Image…", #selector(insertImage)), ("Save Editable Project…", #selector(saveProject))]
+            for (title, action) in entries { let m = NSMenuItem(title: title, action: action, keyEquivalent: ""); m.target = self; item.menu.addItem(m) }
+            func submenu(_ title: String, _ names: [String], _ action: Selector) {
+                let parent = NSMenuItem(title: title, action: nil, keyEquivalent: ""); let sub = NSMenu()
+                for (i, name) in names.enumerated() { let m = NSMenuItem(title: name, action: action, keyEquivalent: ""); m.tag = i; m.target = self; sub.addItem(m) }
+                parent.submenu = sub; item.menu.addItem(parent)
+            }
+            submenu("Arrow Style", ["Filled", "Curved", "Double Headed", "Outline"], #selector(arrowStyle(_:)))
+            submenu("Text Style", ["Outlined", "Bold", "Monospace", "Regular", "White Label", "Black Label", "Color Label"], #selector(textStyle(_:)))
+            submenu("Crop Aspect Ratio", ["Freeform", "Square", "16:9", "4:3", "9:16"], #selector(cropAspect(_:)))
             return item
         case .stroke:
             let item = NSMenuToolbarItem(itemIdentifier: id)
@@ -589,6 +790,49 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         strokeItem?.menu.items.forEach { $0.state = $0 === sender ? .on : .off }
     }
 
+    @objc private func customColor() {
+        let p = NSColorPanel.shared; p.setTarget(self); p.setAction(#selector(colorChanged(_:))); p.color = canvas.color; p.orderFront(nil)
+    }
+    @objc private func colorChanged(_ sender: NSColorPanel) { canvas.color = sender.color; refreshColor() }
+    @objc private func arrowStyle(_ sender: NSMenuItem) { canvas.arrowStyle = sender.tag; canvas.tool = .arrow }
+    @objc private func textStyle(_ sender: NSMenuItem) { canvas.textStyle = sender.tag; canvas.tool = .text }
+    @objc private func cropAspect(_ sender: NSMenuItem) { canvas.cropAspect = [0, 1, 16.0 / 9, 4.0 / 3, 9.0 / 16][sender.tag]; canvas.tool = .crop }
+    @objc private func undoEdit() { canvas.undo() }
+    @objc private func redoEdit() { canvas.redo() }
+    @objc private func rotateLeft() { canvas.replaceImage(ImageTools.rotate(canvas.export(), clockwise: false)) }
+    @objc private func rotateRight() { canvas.replaceImage(ImageTools.rotate(canvas.export(), clockwise: true)) }
+    @objc private func flipHorizontal() { canvas.replaceImage(ImageTools.flip(canvas.export(), horizontal: true)) }
+    @objc private func flipVertical() { canvas.replaceImage(ImageTools.flip(canvas.export(), horizontal: false)) }
+    private func resizeDocument() {
+        guard let canvas, let doc = scroll?.documentView else { return }
+        doc.setFrameSize(NSSize(width: canvas.bounds.width + 96, height: canvas.bounds.height + 96)); canvas.frame.origin = NSPoint(x: 48, y: 48)
+        doc.needsDisplay = true; fit()
+    }
+    @objc private func resizeImage() {
+        let p = NSAlert(); p.messageText = "Resize Image"; p.informativeText = "Width in pixels. Height scales proportionally."
+        let field = NSTextField(string: "\(Int(ImageTools.pixelSize(canvas.image).width))"); field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        p.accessoryView = field; p.addButton(withTitle: "Resize"); p.addButton(withTitle: "Cancel")
+        if p.runModal() == .alertFirstButtonReturn, let width = Double(field.stringValue), width.isFinite, (1...16384).contains(width) {
+            let flat = canvas.export(); canvas.replaceImage(ImageTools.resize(flat, pixels: NSSize(width: width, height: width * flat.size.height / flat.size.width)))
+        }
+    }
+    @objc private func insertImage() {
+        let p = NSOpenPanel(); p.allowedContentTypes = [.image]; p.allowsMultipleSelection = true
+        p.beginSheetModal(for: self) { [weak self] response in
+            if response == .OK { for url in p.urls { if let image = NSImage(contentsOf: url) { self?.canvas.insertImage(image) } } }
+        }
+    }
+    @objc private func saveProject() {
+        let p = NSSavePanel(); p.nameFieldStringValue = source.deletingPathExtension().lastPathComponent + ".leanshot"
+        p.beginSheetModal(for: self) { [weak self] response in
+            guard response == .OK, let self, let url = p.url else { return }
+            do { try ShotProject(canvas: self.canvas).write(url) } catch { NSAlert(error: error).runModal() }
+        }
+    }
+    @objc private func background() {
+        if let style = BackgroundEditor.choose() { canvas.replaceImage(style.apply(to: canvas.export())) }
+    }
+
     // MARK: Zoom
 
     private func fit() {
@@ -626,11 +870,15 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
 
     /// Writes over the capture, copies it, and closes, like CleanShot's Done.
     private func done() {
+        if source.pathExtension.lowercased() == "leanshot" {
+            do { try ShotProject(canvas: canvas).write(source); close() } catch { NSAlert(error: error).runModal() }; return
+        }
         guard let png = canvas.pngData() else { return }
         do {
-            try png.write(to: source)
-            Clipboard.copy(source)
-            QuickAccess.show(source)
+            let destination = source.deletingLastPathComponent().standardizedFileURL == Capture.folder.standardizedFileURL && source.pathExtension.lowercased() == "png" ? source! : Capture.newURL("png")
+            try png.write(to: destination, options: .atomic)
+            Clipboard.copy(destination)
+            QuickAccess.show(destination)
             close()
         } catch { NSAlert(error: error).runModal() }
     }
@@ -650,6 +898,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let editingText = firstResponder is NSTextView
         if editingText, event.charactersIgnoringModifiers == "\r" { return false } // Return commits text, not Done
+        if !editingText, event.keyCode == 36, event.modifierFlags.intersection([.command, .control, .option]).isEmpty { done(); return true }
         if editingText, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers {
             let edits: [String: Selector] = ["x": #selector(NSText.cut(_:)), "c": #selector(NSText.copy(_:)),
                                              "v": #selector(NSText.paste(_:)), "a": #selector(NSText.selectAll(_:)),
@@ -660,7 +909,9 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             return super.performKeyEquivalent(with: event)
         }
         switch key {
-        case "z" where !editingText: canvas.undo()
+        case "z" where !editingText: event.modifierFlags.contains(.shift) ? canvas.redo() : canvas.undo()
+        case "v" where !editingText:
+            if let image = NSImage(pasteboard: .general) { canvas.insertImage(image) }
         case "c" where !editingText: copyImage()
         case "s": done()
         case "w": close()
@@ -686,7 +937,8 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             Mark(tool: .counter, points: [CGPoint(x: 330, y: 60)], color: .systemBlue, width: 4),
         ]
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let v = w.contentView!.superview!
+            var v = w.contentView!
+            while let parent = v.superview { v = parent }
             let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds)!
             v.cacheDisplay(in: v.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: output)
