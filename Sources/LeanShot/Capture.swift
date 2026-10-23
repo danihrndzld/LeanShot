@@ -2,16 +2,16 @@ import AppKit
 import Vision
 
 enum Capture {
-    static let folder: URL = {
-        let url = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0].appendingPathComponent("LeanShot")
+    static var folder: URL {
+        let url = Settings.saveFolder
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
-    }()
+    }
 
     static func newURL(_ ext: String) -> URL {
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return folder.appendingPathComponent("LeanShot \(f.string(from: Date())).\(ext)")
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss.SSS"
+        return folder.appendingPathComponent("LeanShot \(f.string(from: Date()))-\(UUID().uuidString.prefix(4)).\(ext)")
     }
 
     static func tempURL(_ ext: String) -> URL {
