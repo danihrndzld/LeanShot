@@ -1,5 +1,6 @@
 import AppKit
 import ScreenCaptureKit
+import ApplicationServices
 
 enum Stitcher {
     /// Matches the bottom/right of the last frame with the top/left of the next.
@@ -65,20 +66,35 @@ final class ScrollingSession {
     private let label = NSTextField(labelWithString: "1 frame · Scroll, pause, then Add Frame")
     private var busy = false
     private var frames = 1
+    private var autoTimer: Timer?
+    private var unchangedFrames = 0
     private init(region: ScreenRegion, image: NSImage, horizontal: Bool) {
         self.region = region; self.previous = image; self.result = image; self.horizontal = horizontal
         let f = region.screen.visibleFrame
-        panel = NSPanel(contentRect: NSRect(x: f.midX - 240, y: f.minY + 24, width: 480, height: 100), styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: f.midX - 316, y: f.minY + 24, width: 632, height: 100), styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = horizontal ? "Scrolling Capture — Horizontal" : "Scrolling Capture — Vertical"
         panel.level = .floating; panel.isReleasedWhenClosed = false
-        label.frame = NSRect(x: 16, y: 66, width: 448, height: 22); panel.contentView?.addSubview(label)
-        let actions: [(String, () -> Void)] = [("Add Frame", { [weak self] in self?.addFrame() }), ("Finish", { [weak self] in self?.finish() }), ("Cancel", { [weak self] in self?.cancel() })]
+        label.frame = NSRect(x: 16, y: 66, width: 600, height: 22); panel.contentView?.addSubview(label)
+        let actions: [(String, () -> Void)] = [("Add Frame", { [weak self] in self?.addFrame() }), ("Auto / Stop", { [weak self] in self?.toggleAuto() }), ("Finish", { [weak self] in self?.finish() }), ("Cancel", { [weak self] in self?.cancel() })]
         for (i, pair) in actions.enumerated() {
             let b = ClosureButton(frame: NSRect(x: 16 + i * 152, y: 16, width: 140, height: 32), action: pair.1)
             b.title = pair.0; b.bezelStyle = .rounded; panel.contentView?.addSubview(b)
         }
         panel.orderFrontRegardless()
     }
+    private func toggleAuto() {
+        if autoTimer != nil { stopAuto(); label.stringValue = "Automatic scrolling stopped"; return }
+        guard AXIsProcessTrusted() else { return Toast.show("Enable Accessibility for automatic scrolling, or use Add Frame") }
+        unchangedFrames = 0; label.stringValue = "Auto scrolling… Click Auto / Stop to pause"
+        autoTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+            guard let self, !self.busy else { return }
+            let amount = Int32((self.horizontal ? self.region.rect.width : self.region.rect.height) * 0.45)
+            let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: self.horizontal ? 0 : -amount, wheel2: self.horizontal ? -amount : 0, wheel3: 0)
+            let rect = self.region.globalRect; event?.location = CGPoint(x: rect.midX, y: rect.midY); event?.post(tap: .cghidEventTap)
+            self.addFrame(wait: 0.7)
+        }
+    }
+    private func stopAuto() { autoTimer?.invalidate(); autoTimer = nil }
     static func start(horizontal: Bool) {
         guard current == nil else { NSSound.beep(); return }
         Toast.show("Select only the scrolling content, excluding fixed headers")
@@ -87,12 +103,12 @@ final class ScrollingSession {
             current = ScrollingSession(region: region, image: image, horizontal: horizontal)
         }
     }
-    private func addFrame() {
+    private func addFrame(wait: Double = 0.2) {
         guard !busy else { return }; busy = true; panel.orderOut(nil)
         Task { @MainActor in
             do {
                 // Allow WindowServer to remove the controls before capturing the region.
-                try await Task.sleep(nanoseconds: 200_000_000)
+                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let display = content.displays.first(where: { $0.displayID == region.displayID }) else { throw CocoaError(.featureUnsupported) }
                 let config = SCStreamConfiguration()
@@ -103,8 +119,13 @@ final class ScrollingSession {
                 let next = NSImage(cgImage: cg, size: region.rect.size)
                 if let overlap = Stitcher.overlap(previous, next, horizontal: horizontal) {
                     let length = horizontal ? next.size.width : next.size.height
-                    if overlap >= length - 1 { label.stringValue = "No scroll detected · Scroll further and try again" }
+                    if overlap >= length - 1 {
+                        unchangedFrames += 1
+                        if autoTimer != nil, unchangedFrames >= 2 { stopAuto(); label.stringValue = "End of scroll reached · Finish to save" }
+                        else { label.stringValue = "No scroll detected · Scroll further and try again" }
+                    }
                     else {
+                        unchangedFrames = 0
                         let scale = ImageTools.pixelSize(result).width / result.size.width
                         let width = result.size.width + (horizontal ? length - overlap : 0)
                         let height = result.size.height + (horizontal ? 0 : length - overlap)
@@ -113,16 +134,17 @@ final class ScrollingSession {
                         let pixels = ImageTools.pixelSize(candidate)
                         result = candidate; previous = next; frames += 1; label.stringValue = "\(frames) frames · \(Int(pixels.width)) × \(Int(pixels.height)) px"
                     }
-                } else { label.stringValue = "No overlap found · Scroll back a little and retry" }
-            } catch { NSAlert(error: error).runModal() }
+                } else { stopAuto(); label.stringValue = "No overlap found · Scroll back a little and retry" }
+            } catch { stopAuto(); NSAlert(error: error).runModal() }
             busy = false; panel.orderFrontRegardless()
         }
     }
     private func finish() {
         guard !busy, let data = ImageTools.png(result) else { return }
+        stopAuto()
         let url = Capture.newURL("png")
         do { try data.write(to: url, options: .atomic); cancel(); if Settings.copyOnCapture { Clipboard.copy(url) }; QuickAccess.show(url) }
         catch { NSAlert(error: error).runModal() }
     }
-    private func cancel() { guard !busy else { return }; panel.orderOut(nil); Self.current = nil; QuickAccess.resume() }
+    private func cancel() { guard !busy else { return }; stopAuto(); panel.orderOut(nil); Self.current = nil; QuickAccess.resume() }
 }
