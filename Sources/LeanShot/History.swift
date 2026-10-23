@@ -57,6 +57,10 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
         let cell = NSView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 68))
         let thumb = DragImageView(frame: NSRect(x: 4, y: 6, width: 88, height: 56))
         thumb.url = url; thumb.image = NSImage(contentsOf: url) ?? NSWorkspace.shared.icon(forFile: url.path)
+        thumb.doubleClick = {
+            if url.pathExtension == "leanshot" || NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
+            else { VideoEditor.open(url) }
+        }
         thumb.imageScaling = .scaleProportionallyUpOrDown; cell.addSubview(thumb)
         let name = NSTextField(labelWithString: url.lastPathComponent)
         name.frame = NSRect(x: 108, y: 34, width: max(100, cell.bounds.width - 120), height: 20)

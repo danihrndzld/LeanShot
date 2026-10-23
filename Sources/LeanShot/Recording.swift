@@ -14,6 +14,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     var onStatus: ((String?) -> Void)?
     private(set) var busy = false
     private var recording = false
+    private let decorations = RecordingDecorations()
 
     func chooseWindow(completion: @escaping (URL?) -> Void) {
         guard !busy, Capture.current == nil, !RegionSelector.isSelecting else { NSSound.beep(); return }
@@ -43,14 +44,16 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
         let id = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
         Task { @MainActor in
             do {
+                let globalRegion = region.map { CGRect(x: $0.screen.frame.minX + $0.rect.minX, y: $0.screen.frame.minY + $0.rect.minY, width: $0.rect.width, height: $0.rect.height) }
+                try await decorations.prepare(screen: screen, region: globalRegion)
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let display = content.displays.first(where: { $0.displayID == id }) else { throw CocoaError(.featureUnsupported) }
                 let apps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-                let filter = SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: [])
+                let filter = SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: content.windows.filter { decorations.windowIDs.contains($0.windowID) })
                 let source = region.map { CGRect(x: $0.rect.minX, y: (screen?.frame.height ?? CGFloat(display.height)) - $0.rect.maxY, width: $0.rect.width, height: $0.rect.height) }
                 busy = false
                 await start(filter: filter, sourceRect: source, size: region?.rect.size ?? screen?.frame.size ?? display.frame.size, completion: completion)
-            } catch { busy = false; NSAlert(error: error).runModal() }
+            } catch { decorations.stop(); busy = false; NSAlert(error: error).runModal() }
         }
     }
     @MainActor private func start(filter: SCContentFilter, sourceRect: CGRect?, size: CGSize, completion: @escaping (URL?) -> Void) async {
@@ -65,6 +68,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
             if let sourceRect { config.sourceRect = sourceRect }
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(Settings.recordingFPS))
             config.showsCursor = Settings.captureCursor
+            config.showMouseClicks = Settings.recordClicks
             config.capturesAudio = Settings.recordingAudio; config.excludesCurrentProcessAudio = true
             config.captureMicrophone = Settings.recordingMicrophone
             config.queueDepth = 5
@@ -106,6 +110,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     }
     private func finish(_ result: URL?) {
         timer?.invalidate(); timer = nil; stream = nil; output = nil; url = nil; busy = false; recording = false
+        decorations.stop()
         onStatus?(nil); QuickAccess.resume()
         let completion = didFinish; didFinish = nil; completion?(result)
     }

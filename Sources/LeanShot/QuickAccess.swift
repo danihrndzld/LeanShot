@@ -34,10 +34,11 @@ enum QuickAccess {
     static func hide() { hidden = true; cards.forEach { $0.panel.orderOut(nil) } }
     static func resume() { hidden = false; layout() }
     static func restore() {
+        let wasHidden = hidden
         hidden = false
-        if cards.isEmpty {
-            let urls = recentlyClosed; recentlyClosed = []
-            urls.filter { FileManager.default.fileExists(atPath: $0.path) }.reversed().forEach { show($0) }
+        if wasHidden, !cards.isEmpty { layout(); return }
+        if let url = recentlyClosed.first(where: { url in !cards.contains(where: { $0.url == url }) && FileManager.default.fileExists(atPath: url.path) }) {
+            recentlyClosed.removeAll { $0 == url }; show(url)
         } else { layout() }
     }
     static func close(_ card: OverlayCard) {

@@ -12,6 +12,7 @@
 	<key>LSUIElement</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key><string>LeanShot records your microphone when you enable microphone audio for a screen recording.</string>
+	<key>NSCameraUsageDescription</key><string>LeanShot displays your camera in screen recordings when you enable the camera overlay.</string>
 	<key>CFBundleURLTypes</key>
 	<array><dict><key>CFBundleURLName</key><string>LeanShot Commands</string><key>CFBundleURLSchemes</key><array><string>leanshot</string></array></dict></array>
 	<key>UTExportedTypeDeclarations</key>

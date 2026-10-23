@@ -12,6 +12,14 @@ enum Settings {
     static var recordingFPS: Int { get { defaults.integer(forKey: "recordingFPS") == 60 ? 60 : 30 } set { defaults.set(newValue, forKey: "recordingFPS") } }
     static var recordingAudio: Bool { get { defaults.bool(forKey: "recordingAudio") } set { defaults.set(newValue, forKey: "recordingAudio") } }
     static var recordingMicrophone: Bool { get { defaults.bool(forKey: "recordingMicrophone") } set { defaults.set(newValue, forKey: "recordingMicrophone") } }
+    static var recordCamera: Bool { get { defaults.bool(forKey: "recordCamera") } set { defaults.set(newValue, forKey: "recordCamera") } }
+    static var recordKeystrokes: Bool { get { defaults.bool(forKey: "recordKeystrokes") } set { defaults.set(newValue, forKey: "recordKeystrokes") } }
+    static var commandKeysOnly: Bool { get { defaults.object(forKey: "commandKeysOnly") as? Bool ?? true } set { defaults.set(newValue, forKey: "commandKeysOnly") } }
+    static var recordClicks: Bool { get { defaults.bool(forKey: "recordClicks") } set { defaults.set(newValue, forKey: "recordClicks") } }
+    static var cameraCorner: Int { get { defaults.object(forKey: "cameraCorner") as? Int ?? 1 } set { defaults.set(newValue, forKey: "cameraCorner") } }
+    static var cameraSize: CGFloat { get { let v = defaults.double(forKey: "cameraSize"); return v > 0 ? v : 180 } set { defaults.set(newValue, forKey: "cameraSize") } }
+    static var cameraCircle: Bool { get { defaults.object(forKey: "cameraCircle") as? Bool ?? true } set { defaults.set(newValue, forKey: "cameraCircle") } }
+    static var keysLight: Bool { get { defaults.bool(forKey: "keysLight") } set { defaults.set(newValue, forKey: "keysLight") } }
     static var saveFolder: URL {
         get {
             if let path = defaults.string(forKey: "saveFolder") { return URL(fileURLWithPath: path, isDirectory: true) }
@@ -52,6 +60,14 @@ final class SettingsWindow: NSWindow {
         popup("Recording frame rate", ["30 fps", "60 fps"], Settings.recordingFPS == 60 ? 1 : 0) { Settings.recordingFPS = $0 == 1 ? 60 : 30 }
         toggle("Record computer audio", Settings.recordingAudio) { Settings.recordingAudio = $0 }
         toggle("Record microphone (macOS 15+)", Settings.recordingMicrophone) { Settings.recordingMicrophone = $0 }
+        toggle("Show clicks in recordings (macOS 15+)", Settings.recordClicks) { Settings.recordClicks = $0 }
+        toggle("Record camera (display / area, macOS 15+)", Settings.recordCamera) { Settings.recordCamera = $0 }
+        popup("Camera position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.cameraCorner) { Settings.cameraCorner = $0 }
+        popup("Camera size", ["Small", "Medium", "Large"], [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }
+        toggle("Circular camera frame", Settings.cameraCircle) { Settings.cameraCircle = $0 }
+        toggle("Show keystrokes (display / area, Accessibility)", Settings.recordKeystrokes) { Settings.recordKeystrokes = $0 }
+        toggle("Show only shortcuts with ⌘ / ⌃ / ⌥", Settings.commandKeysOnly) { Settings.commandKeysOnly = $0 }
+        toggle("Light keystroke style", Settings.keysLight) { Settings.keysLight = $0 }
         toggle("Launch at login", SMAppService.mainApp.status == .enabled) { enabled in
             do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
             catch { NSAlert(error: error).runModal() }
@@ -61,7 +77,12 @@ final class SettingsWindow: NSWindow {
             if p.runModal() == .OK, let url = p.url { Settings.saveFolder = url }
         }
         folder.title = "Choose Captures Folder…"; folder.bezelStyle = .rounded; stack.addArrangedSubview(folder)
-        w.contentView?.addSubview(stack)
+        let height = max(508, stack.fittingSize.height)
+        stack.frame = NSRect(x: 28, y: 24, width: 424, height: height)
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: height + 48)); doc.addSubview(stack)
+        let scroll = NSScrollView(frame: w.contentView!.bounds); scroll.documentView = doc; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.frame.height - scroll.contentSize.height)))
+        w.contentView?.addSubview(scroll)
         w.center(); instance = w
         NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
     }
