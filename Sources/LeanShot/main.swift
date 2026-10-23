@@ -176,6 +176,7 @@ enum Hotkeys {
 }
 
 if CommandLine.arguments.contains("--selftest") {
+    do { try EditorTests.run() } catch { fatalError("Regression tests: \(error)") }
     SelfTest.run()
     exit(0)
 }

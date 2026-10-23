@@ -39,10 +39,11 @@ enum ImageTools {
     static func crop(_ image: NSImage, to rect: NSRect) -> NSImage {
         let r = rect.intersection(NSRect(origin: .zero, size: image.size))
         guard r.width >= 1, r.height >= 1 else { return image }
-        let p = pixelSize(image)
-        return render(size: r.size, pixels: NSSize(width: r.width * p.width / image.size.width, height: r.height * p.height / image.size.height)) { out in
-            image.draw(in: out, from: r, operation: .copy, fraction: 1)
-        }
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
+        let sx = CGFloat(cg.width) / image.size.width, sy = CGFloat(cg.height) / image.size.height
+        let pixels = CGRect(x: r.minX * sx, y: (image.size.height - r.maxY) * sy, width: r.width * sx, height: r.height * sy).integral
+        guard let cropped = cg.cropping(to: pixels) else { return image }
+        return NSImage(cgImage: cropped, size: r.size)
     }
     static func resize(_ image: NSImage, pixels: NSSize) -> NSImage {
         render(size: pixels, pixels: pixels) { image.draw(in: $0) }
