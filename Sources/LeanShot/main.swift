@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         // Default macOS shortcuts (⌘⇧3/4/5) belong to the system, so LeanShot uses ⌃⇧.
         let items: [(String, UInt32, String, Selector)] = [
+            ("All-in-One…", UInt32(kVK_ANSI_1), "1", #selector(allInOne)),
             ("Capture Area", UInt32(kVK_ANSI_4), "4", #selector(captureArea)),
             ("Capture Window", UInt32(kVK_ANSI_5), "5", #selector(captureWindow)),
             ("Capture Fullscreen", UInt32(kVK_ANSI_3), "3", #selector(captureFullscreen)),
@@ -37,7 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 ("Restore Quick Access", #selector(restoreOverlay)),
                                 ("Hide Quick Access", #selector(hideOverlay)),
                                 ("Capture History…", #selector(history)),
-                                ("All-in-One / Frozen Area…", #selector(captureFrozen)),
+                                ("Capture Frozen Area…", #selector(captureFrozen)),
+                                ("Scrolling Capture (Vertical)…", #selector(scrollVertical)),
+                                ("Scrolling Capture (Horizontal)…", #selector(scrollHorizontal)),
                                 ("Record Area…", #selector(recordArea)),
                                 ("Record Window…", #selector(recordWindow)),
                                 ("Open Image…", #selector(openImage)),
@@ -64,6 +67,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func captureArea() { shoot(["-i", "-s"]) }
+    @objc func allInOne() {
+        let modes: [(String, Selector)] = [("Frozen Area (remember selection)", #selector(captureFrozen)), ("Area", #selector(captureArea)), ("Window", #selector(captureWindow)), ("Fullscreen", #selector(captureFullscreen)), ("Text / QR Code", #selector(captureText)), ("Scrolling (Vertical)", #selector(scrollVertical)), ("Scrolling (Horizontal)", #selector(scrollHorizontal)), ("Record Display", #selector(recordScreen)), ("Record Area", #selector(recordArea)), ("Record Window", #selector(recordWindow))]
+        let alert = NSAlert(); alert.messageText = "LeanShot"; alert.informativeText = "Choose a capture mode"
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 30)); picker.addItems(withTitles: modes.map(\.0)); alert.accessoryView = picker
+        alert.addButton(withTitle: "Capture"); alert.addButton(withTitle: "Cancel"); NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            let action = modes[picker.indexOfSelectedItem].1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.perform(action) }
+        }
+    }
     @objc func captureWindow() { shoot(["-i", "-w"] + (Settings.windowShadow ? [] : ["-o"])) }
     @objc func captureFullscreen() { shoot([]) }
     @objc func captureAreaTimer() { shoot(["-i", "-s", "-T", "5"]) }
@@ -93,6 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let region { Recorder.shared.startDisplay(region: region) { [weak self] in self?.recordingFinished($0) } }
         }
     }
+    @objc func scrollVertical() { ScrollingSession.start(horizontal: false) }
+    @objc func scrollHorizontal() { ScrollingSession.start(horizontal: true) }
     @objc func recordWindow() {
         if #available(macOS 15.0, *) { Recorder.shared.chooseWindow { [weak self] in self?.recordingFinished($0) } }
         else { Toast.show("Window recording requires macOS 15+") }
@@ -177,6 +192,12 @@ enum Hotkeys {
 
 if CommandLine.arguments.contains("--selftest") {
     do { try EditorTests.run() } catch { fatalError("Regression tests: \(error)") }
+    var videoTestsFinished = false
+    Task { @MainActor in
+        do { try await EditorTests.runVideo() } catch { fatalError("Video regression: \(error)") }
+        videoTestsFinished = true
+    }
+    while !videoTestsFinished { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     SelfTest.run()
     exit(0)
 }

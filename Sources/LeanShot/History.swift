@@ -71,7 +71,7 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
     @objc private func openSelected() {
         guard let url = selected else { return }
         if url.pathExtension == "leanshot" || NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
-        else { NSWorkspace.shared.open(url) }
+        else { VideoEditor.open(url) }
     }
     @objc private func copySelected() { if let url = selected { Clipboard.copy(url); Toast.show("Copied") } }
     @objc private func reveal() { if let url = selected { NSWorkspace.shared.activateFileViewerSelecting([url]) } }

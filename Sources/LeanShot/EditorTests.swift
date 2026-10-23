@@ -1,6 +1,48 @@
 import AppKit
+import AVFoundation
+import ImageIO
 
 final class EditorTests {
+    static func runVideo() async throws {
+        let url = Capture.tempURL("mov"), output = Capture.tempURL("mp4"), gif = Capture.tempURL("gif")
+        defer { for file in [url, output, gif] { try? FileManager.default.removeItem(at: file) } }
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 120])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 160, kCVPixelBufferHeightKey as String: 120])
+        writer.add(input); check(writer.startWriting()); writer.startSession(atSourceTime: .zero)
+        for index in 0..<12 {
+            while !input.isReadyForMoreMediaData {
+                if writer.status == .failed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            var buffer: CVPixelBuffer?; CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &buffer)
+            let pixel = buffer!; CVPixelBufferLockBaseAddress(pixel, [])
+            let context = CGContext(data: CVPixelBufferGetBaseAddress(pixel), width: 160, height: 120, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixel), space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
+            context.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 160, height: 120))
+            CVPixelBufferUnlockBaseAddress(pixel, []); check(adaptor.append(pixel, withPresentationTime: CMTime(value: Int64(index), timescale: 10)))
+        }
+        input.markAsFinished(); await writer.finishWriting(); checkEqual(writer.status, .completed)
+        let composition = try await VideoEditor.composition(url: url, start: 0.2, end: 0.8, rate: 2, muted: true)
+        let length = try await composition.load(.duration).seconds
+        check(abs(length - 0.3) < 0.01, "Trim / speed produced wrong duration")
+        checkEqual(try await composition.loadTracks(withMediaType: .audio).count, 0)
+        let video = try await VideoEditor.videoComposition(composition, aspect: 2, background: 2)
+        checkEqual(video.renderSize.width, video.renderSize.height)
+        let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality)!
+        session.outputURL = output; session.outputFileType = .mp4; session.videoComposition = video
+        await session.export(); guard session.status == .completed else { throw session.error ?? CocoaError(.fileWriteUnknown) }
+        let saved = AVURLAsset(url: output)
+        let savedDuration = try await saved.load(.duration).seconds
+        check(abs(savedDuration - 0.3) < 0.05, "MP4 output duration differs")
+        let track = try await saved.loadTracks(withMediaType: .video).first!
+        let dimensions = try await track.load(.naturalSize)
+        checkEqual(dimensions.width, dimensions.height)
+        try await VideoEditor.exportGIF(asset: composition, video: video, to: gif)
+        let decoded = CGImageSourceCreateWithURL(gif as CFURL, nil)!
+        checkEqual(CGImageSourceGetCount(decoded), 3)
+        checkNotNil(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
+        print("Video regression passed: real H.264 fixture → trim / speed / square MP4 + 3-frame GIF")
+    }
     static func run() throws {
         _ = NSApplication.shared
         let tests = EditorTests()
@@ -12,7 +54,8 @@ final class EditorTests {
         print("Testing backgrounds"); tests.testBackgroundAspectAndTransparentPadding()
         tests.testCaptureFilenamesNeverCollide()
         try tests.testHistoryFiltersFilesAndPreservesOriginals()
-        print("8 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, backgrounds, filenames, history")
+        tests.testScrollingOverlapAndDuplicates()
+        print("9 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, backgrounds, filenames, history, scrolling")
     }
     private func fixture() -> NSImage {
         ImageTools.render(size: NSSize(width: 100, height: 60), pixels: NSSize(width: 200, height: 120)) { r in
@@ -90,6 +133,25 @@ final class EditorTests {
     }
     func testCaptureFilenamesNeverCollide() {
         checkNotEqual(Capture.newURL("png"), Capture.newURL("png"))
+    }
+    func testScrollingOverlapAndDuplicates() {
+        let document = ImageTools.render(size: NSSize(width: 240, height: 240)) { _ in
+            for y in 0..<40 { for x in 0..<40 {
+                let value = CGFloat((x * 43 + y * 71 + x * y * 13) % 251) / 250
+                NSColor(srgbRed: value, green: value, blue: value, alpha: 1).setFill()
+                NSRect(x: x * 6, y: y * 6, width: 6, height: 6).fill()
+            } }
+        }
+        for horizontal in [false, true] {
+            let a = ImageTools.crop(document, to: horizontal ? CGRect(x: 0, y: 0, width: 120, height: 120) : CGRect(x: 0, y: 120, width: 120, height: 120))
+            let b = ImageTools.crop(document, to: horizontal ? CGRect(x: 60, y: 0, width: 120, height: 120) : CGRect(x: 0, y: 60, width: 120, height: 120))
+            guard let overlap = Stitcher.overlap(a, b, horizontal: horizontal) else { preconditionFailure("Scrolling match not found") }
+            check(abs(overlap - 60) < 2, "Wrong overlap: \(overlap)")
+            checkEqual(Stitcher.overlap(a, a, horizontal: horizontal), 120)
+            let result = Stitcher.append(b, to: a, overlap: overlap, horizontal: horizontal)
+            check(abs((horizontal ? result.size.width : result.size.height) - 180) < 2, "Stitched length differs from the source document")
+            checkEqual(horizontal ? result.size.height : result.size.width, 120)
+        }
     }
     func testHistoryFiltersFilesAndPreservesOriginals() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
