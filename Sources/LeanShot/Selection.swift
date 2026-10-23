@@ -16,7 +16,7 @@ final class RegionSelector: NSWindow {
     private static var current: RegionSelector?
     static var isSelecting = false
 
-    static func choose(size: CGSize? = nil, completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
+    static func choose(size: CGSize? = nil, aspect: CGFloat = 0, completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
         guard !isSelecting, Capture.current == nil else { NSSound.beep(); return }
         isSelecting = true; QuickAccess.hide()
         let pointer = NSEvent.mouseLocation
@@ -39,6 +39,7 @@ final class RegionSelector: NSWindow {
                 w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                 let v = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size)); v.image = image
                 if let encoded = Settings.defaults.string(forKey: "lastRegion.\(displayID)") { v.selection = NSRectFromString(encoded) }
+                v.aspectRatio = aspect
                 v.fixedSize = size
                 v.finish = { [weak w] rect in
                     let region = rect.map { ScreenRegion(screen: screen, rect: $0) }
@@ -60,6 +61,14 @@ private final class SelectionView: NSView {
     var fixedSize: CGSize? {
         didSet { if let fixedSize { selection = CGRect(x: (bounds.width - fixedSize.width) / 2, y: (bounds.height - fixedSize.height) / 2, width: fixedSize.width, height: fixedSize.height) } }
     }
+    var aspectRatio: CGFloat = 0 {
+        didSet {
+            if aspectRatio > 0 {
+                let width = min(selection.width > 0 ? selection.width : bounds.width / 2, bounds.height * aspectRatio)
+                selection = CGRect(x: (bounds.width - width) / 2, y: (bounds.height - width / aspectRatio) / 2, width: width, height: width / aspectRatio)
+            }
+        }
+    }
     var finish: ((CGRect?) -> Void)?
     private var start = CGPoint.zero
     private var pointer = CGPoint.zero
@@ -77,9 +86,11 @@ private final class SelectionView: NSView {
     override func mouseDragged(with event: NSEvent) {
         pointer = convert(event.locationInWindow, from: nil)
         if fixedSize != nil { updateFixedSelection(); needsDisplay = true; return }
-        if event.modifierFlags.contains(.shift) {
-            let edge = min(abs(pointer.x - start.x), abs(pointer.y - start.y))
-            pointer.x = start.x + (pointer.x > start.x ? edge : -edge); pointer.y = start.y + (pointer.y > start.y ? edge : -edge)
+        pointer.x = min(bounds.maxX, max(0, pointer.x)); pointer.y = min(bounds.maxY, max(0, pointer.y))
+        let ratio = event.modifierFlags.contains(.shift) ? 1 : aspectRatio
+        if ratio > 0 {
+            let width = min(abs(pointer.x - start.x), abs(pointer.y - start.y) * ratio)
+            pointer.x = start.x + (pointer.x > start.x ? width : -width); pointer.y = start.y + (pointer.y > start.y ? width / ratio : -width / ratio)
         }
         selection = CGRect(x: min(start.x, pointer.x), y: min(start.y, pointer.y), width: abs(pointer.x - start.x), height: abs(pointer.y - start.y)).intersection(bounds)
         needsDisplay = true

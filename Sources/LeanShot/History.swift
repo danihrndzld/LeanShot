@@ -13,7 +13,7 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
     }
     private init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        title = "Capture History"; isReleasedWhenClosed = false; minSize = NSSize(width: 560, height: 340)
+        title = "Capture History"; isReleasedWhenClosed = false; minSize = NSSize(width: 640, height: 340)
         guard let content = contentView else { return }
         search.frame = NSRect(x: 20, y: 468, width: 480, height: 28)
         search.placeholderString = "Search captures by name"; search.delegate = self; search.autoresizingMask = [.width, .minYMargin]

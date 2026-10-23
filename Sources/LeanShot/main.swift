@@ -5,6 +5,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var lastCapture: URL? = CaptureHistory.files().first { NSImage(contentsOf: $0) != nil }
     private var recordItem: NSMenuItem?
+    private var quitAfterRecording = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if #available(macOS 15.0, *), Recorder.shared.busy {
+            if Recorder.shared.stopForTermination({ NSApp.reply(toApplicationShouldTerminate: $0) }) { return .terminateLater }
+            Toast.show("Wait for recording startup or saving to finish before quitting"); return .terminateCancel
+        }
+        if let process = Capture.current, process.arguments?.contains("-v") == true {
+            guard process.isRunning else { return .terminateCancel }
+            quitAfterRecording = true; process.interrupt(); return .terminateLater
+        }
+        return .terminateNow
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         let commands: [String: Selector] = ["capture": #selector(captureArea), "area": #selector(captureArea), "window": #selector(captureWindow), "fullscreen": #selector(captureFullscreen), "text": #selector(captureText), "record": #selector(recordScreen), "all-in-one": #selector(allInOne), "history": #selector(history), "restore": #selector(restoreOverlay)]
@@ -96,11 +109,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         width.placeholderString = "Width"; height.placeholderString = "Height"
         for field in [width, height] { field.widthAnchor.constraint(equalToConstant: 130).isActive = true; row.addArrangedSubview(field) }
         stack.addArrangedSubview(row); stack.frame = NSRect(x: 0, y: 0, width: 320, height: 100); alert.accessoryView = stack
+        let aspect = NSPopUpButton(); aspect.addItems(withTitles: ["Free aspect", "Square 1:1", "Landscape 16:9", "4:3", "Portrait 9:16"])
+        stack.addArrangedSubview(aspect); stack.frame.size.height = 140
         alert.addButton(withTitle: "Capture"); alert.addButton(withTitle: "Cancel"); NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             if picker.indexOfSelectedItem == 0, !width.stringValue.isEmpty || !height.stringValue.isEmpty {
                 guard let w = Double(width.stringValue), let h = Double(height.stringValue), w.isFinite, h.isFinite, w >= 3, h >= 3 else { return Toast.show("Enter a valid width and height of at least 3 points") }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.captureFrozenSize(CGSize(width: w, height: h)) }; return
+            }
+            if picker.indexOfSelectedItem == 0 {
+                let ratio = [0.0, 1, 16.0 / 9, 4.0 / 3, 9.0 / 16][aspect.indexOfSelectedItem]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.captureFrozenSize(nil, aspect: ratio) }; return
             }
             let action = modes[picker.indexOfSelectedItem].1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.perform(action) }
@@ -109,8 +128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func captureWindow() { shoot(["-i", "-w"] + (Settings.windowShadow ? [] : ["-o"])) }
     @objc func captureFullscreen() { shoot([]) }
     @objc func captureAreaTimer() { shoot(["-i", "-s", "-T", "5"]) }
-    /// Toggle. screencapture rejects -v with -i, so this records the whole main display.
-    // ponytail: full-screen only; region recording needs SCStream + SCRecordingOutput.
     @objc func recordScreen() {
         if #available(macOS 15.0, *) {
             if Recorder.shared.busy { Recorder.shared.stop() }
@@ -126,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shoot(["-v", "-D", "1"], ext: "mov") { [weak self] in
             self?.recordItem?.title = "Record Screen"
             self?.statusItem.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "LeanShot")
+            if self?.quitAfterRecording == true { NSApp.reply(toApplicationShouldTerminate: true) }
         }
     }
     @objc func recordArea() {
@@ -147,8 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func captureFrozen() {
         captureFrozenSize(nil)
     }
-    private func captureFrozenSize(_ size: CGSize?) {
-        RegionSelector.choose(size: size) { [weak self] _, image in
+    private func captureFrozenSize(_ size: CGSize?, aspect: CGFloat = 0) {
+        RegionSelector.choose(size: size, aspect: aspect) { [weak self] _, image in
             guard let image, let data = ImageTools.png(image) else { return }
             let url = Capture.newURL("png")
             do { try data.write(to: url, options: .atomic); self?.lastCapture = url; if Settings.copyOnCapture { Clipboard.copy(url) }; QuickAccess.show(url) }
@@ -206,6 +224,7 @@ enum Hotkeys {
     static var onChange: (() -> Void)?
     private static var handlers: [UInt32: () -> Void] = [:]
     private static var installed = false
+    private static var suspended = false
 
     static func register(keyCode: UInt32, modifiers: UInt32, key: String, _ handler: @escaping () -> Void) {
         if !installed {
@@ -215,7 +234,7 @@ enum Hotkeys {
                 var id = EventHotKeyID()
                 GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                                   nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-                DispatchQueue.main.async { Hotkeys.handlers[id.id]?() }
+                DispatchQueue.main.async { if !Hotkeys.suspended { Hotkeys.handlers[id.id]?() } }
                 return noErr
             }, 1, &spec, nil, nil)
         }
@@ -245,10 +264,12 @@ enum Hotkeys {
         return (f.contains(.control) ? "⌃" : "") + (f.contains(.option) ? "⌥" : "") + (f.contains(.shift) ? "⇧" : "") + (f.contains(.command) ? "⌘" : "") + (value.key == " " ? "Space" : value.key.uppercased())
     }
     static func suspend() {
+        suspended = true
         for code in Array(bindings.keys) { if let ref = bindings[code]?.ref { UnregisterEventHotKey(ref); bindings[code]?.ref = nil } }
     }
     static func resume() {
         for code in Array(bindings.keys) { if var binding = bindings[code], binding.ref == nil { _ = activate(&binding); bindings[code] = binding } }
+        suspended = false
     }
     static func rebind(_ defaultCode: UInt32, event: NSEvent) -> Bool {
         guard var original = bindings[defaultCode], let key = event.charactersIgnoringModifiers, !key.isEmpty else { return false }
@@ -259,9 +280,10 @@ enum Hotkeys {
         }
         guard modifiers & UInt32(cmdKey | controlKey | optionKey) != 0 else { return false }
         if bindings.contains(where: { $0.key != defaultCode && $0.value.code == UInt32(event.keyCode) && $0.value.modifiers == modifiers }) { Toast.show("Another LeanShot action already uses that shortcut"); return false }
+        let wasRegistered = original.ref != nil
         if let ref = original.ref { UnregisterEventHotKey(ref); original.ref = nil }
         var updated = Binding(code: UInt32(event.keyCode), modifiers: modifiers, key: key.lowercased(), ref: nil, id: original.id)
-        guard activate(&updated) == noErr else { _ = activate(&original); bindings[defaultCode] = original; Toast.show("That shortcut is already in use"); return false }
+        guard activate(&updated) == noErr else { if wasRegistered { _ = activate(&original) }; bindings[defaultCode] = original; Toast.show("That shortcut is already in use"); return false }
         bindings[defaultCode] = updated
         Settings.defaults.set(updated.code, forKey: "hotkey.\(defaultCode).code"); Settings.defaults.set(updated.modifiers, forKey: "hotkey.\(defaultCode).modifiers"); Settings.defaults.set(updated.key, forKey: "hotkey.\(defaultCode).key")
         onChange?(); return true
