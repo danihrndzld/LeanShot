@@ -224,6 +224,7 @@ final class DragImageView: NSImageView, NSDraggingSource {
 /// Screenshot pinned above all windows. Drag to move, scroll to zoom, Esc or double-click to close.
 final class PinWindow: NSPanel {
     private static var open: [PinWindow] = []
+    static func unlockAll() { open.forEach { $0.ignoresMouseEvents = false } }
 
     static func pin(_ image: NSImage) {
         let screen = NSScreen.main?.visibleFrame ?? .zero
@@ -237,6 +238,11 @@ final class PinWindow: NSPanel {
         view.image = image
         view.autoresizingMask = [.width, .height]
         w.contentView = view
+        let menu = NSMenu()
+        for (title, action) in [("Lock (Click Through)", #selector(lockPin)), ("Opacity 50% / 100%", #selector(toggleOpacity)), ("Close", #selector(closePin))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = w; menu.addItem(item)
+        }
+        view.menu = menu
         w.aspectRatio = size
         w.level = .floating
         w.hasShadow = true
@@ -249,8 +255,21 @@ final class PinWindow: NSPanel {
     override var canBecomeKey: Bool { true }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { dismiss() } else { super.keyDown(with: event) }
+        let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+        var origin = frame.origin
+        switch event.keyCode {
+        case 53: dismiss(); return
+        case 123: origin.x -= step
+        case 124: origin.x += step
+        case 125: origin.y -= step
+        case 126: origin.y += step
+        default: super.keyDown(with: event); return
+        }
+        setFrameOrigin(origin)
     }
+    @objc private func lockPin() { ignoresMouseEvents = true; Toast.show("Pin locked · Menu → Unlock Floating Screenshots") }
+    @objc private func toggleOpacity() { alphaValue = alphaValue < 1 ? 1 : 0.5 }
+    @objc private func closePin() { dismiss() }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { dismiss() } else { super.mouseDown(with: event) }

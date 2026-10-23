@@ -3,7 +3,7 @@ import Carbon
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var lastCapture: URL?
+    private var lastCapture: URL? = CaptureHistory.files().first { NSImage(contentsOf: $0) != nil }
     private var recordItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (title, action) in [("Capture Area in 5 s", #selector(captureAreaTimer)),
                                 ("Annotate Last Capture", #selector(annotateLast)),
                                 ("Pin Last Capture", #selector(pinLast)),
+                                ("Unlock Floating Screenshots", #selector(unlockPins)),
+                                ("Restore Quick Access", #selector(restoreOverlay)),
+                                ("Hide Quick Access", #selector(hideOverlay)),
+                                ("Capture History…", #selector(history)),
+                                ("Open Image…", #selector(openImage)),
+                                ("Settings…", #selector(settings)),
                                 ("Open Captures Folder", #selector(openFolder))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
@@ -46,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func captureArea() { shoot(["-i", "-s"]) }
-    @objc func captureWindow() { shoot(["-i", "-w"]) }
+    @objc func captureWindow() { shoot(["-i", "-w"] + (Settings.windowShadow ? [] : ["-o"])) }
     @objc func captureFullscreen() { shoot([]) }
     @objc func captureAreaTimer() { shoot(["-i", "-s", "-T", "5"]) }
     /// Toggle. screencapture rejects -v with -i, so this records the whole main display.
@@ -80,10 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func annotateLast() { if let url = lastCapture { AnnotateWindow.open(url) } }
     @objc func pinLast() { if let url = lastCapture, let image = NSImage(contentsOf: url) { PinWindow.pin(image) } }
     @objc func openFolder() { NSWorkspace.shared.open(Capture.folder) }
+    @objc func restoreOverlay() { QuickAccess.restore() }
+    @objc func unlockPins() { PinWindow.unlockAll() }
+    @objc func hideOverlay() { QuickAccess.hide() }
+    @objc func history() { HistoryWindow.show() }
+    @objc func settings() { SettingsWindow.show() }
+    @objc func openImage() {
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.image, .data]
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url { AnnotateWindow.open(url) }
+    }
 
     private func shoot(_ args: [String], ext: String = "png", finished: (() -> Void)? = nil) {
         QuickAccess.hide() // restore older thumbnails once capture finishes
-        let started = Capture.run(args, to: Capture.newURL(ext)) { [weak self] url in
+        let started = Capture.run(args + (Settings.captureCursor && ext == "png" ? ["-C"] : []), to: Capture.newURL(ext)) { [weak self] url in
             finished?()
             QuickAccess.restore()
             guard let url else { return }
