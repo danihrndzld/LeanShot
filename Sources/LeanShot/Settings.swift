@@ -24,6 +24,12 @@ enum Settings {
     static var keysSize: CGFloat { get { let v = defaults.double(forKey: "keysSize"); return v > 0 ? v : 23 } set { defaults.set(newValue, forKey: "keysSize") } }
     static var cameraFullscreen: Bool { get { defaults.bool(forKey: "cameraFullscreen") } set { defaults.set(newValue, forKey: "cameraFullscreen") } }
     static var hideDesktop: Bool { get { defaults.bool(forKey: "hideDesktop") } set { defaults.set(newValue, forKey: "hideDesktop") } }
+    static var clickColor: Int { get { defaults.integer(forKey: "clickColor") } set { defaults.set(newValue, forKey: "clickColor") } }
+    static var clickSize: CGFloat { get { let v = defaults.double(forKey: "clickSize"); return v > 0 ? v : 40 } set { defaults.set(newValue, forKey: "clickSize") } }
+    static var clickFilled: Bool { get { defaults.bool(forKey: "clickFilled") } set { defaults.set(newValue, forKey: "clickFilled") } }
+    static var clickAnimated: Bool { get { defaults.object(forKey: "clickAnimated") as? Bool ?? true } set { defaults.set(newValue, forKey: "clickAnimated") } }
+    static var recordingResolution: Int { get { let v = defaults.integer(forKey: "recordingResolution"); return [1280, 1920, 3840].contains(v) ? v : 3840 } set { defaults.set(newValue, forKey: "recordingResolution") } }
+    static var focusEnabled: Bool { get { defaults.bool(forKey: "focusEnabled") } set { defaults.set(newValue, forKey: "focusEnabled") } }
     static var saveFolder: URL {
         get {
             if let path = defaults.string(forKey: "saveFolder") { return URL(fileURLWithPath: path, isDirectory: true) }
@@ -62,9 +68,14 @@ final class SettingsWindow: NSWindow {
         popup("Thumbnail size", ["Small", "Medium", "Large"], [220, 280, 340].firstIndex(of: Int(Settings.overlayWidth)) ?? 1) { Settings.overlayWidth = CGFloat([220, 280, 340][$0]) }
         popup("Close overlays", ["Manually", "After 10 seconds", "After 30 seconds", "After 60 seconds"], [0.0, 10, 30, 60].firstIndex(of: Settings.autoClose) ?? 0) { Settings.autoClose = [0, 10, 30, 60][$0] }
         popup("Recording frame rate", ["30 fps", "60 fps"], Settings.recordingFPS == 60 ? 1 : 0) { Settings.recordingFPS = $0 == 1 ? 60 : 30 }
+        popup("Recording resolution limit", ["1280 px", "1920 px", "3840 px (4K)"], [1280, 1920, 3840].firstIndex(of: Settings.recordingResolution) ?? 2) { Settings.recordingResolution = [1280, 1920, 3840][$0] }
         toggle("Record computer audio", Settings.recordingAudio) { Settings.recordingAudio = $0 }
         toggle("Record microphone (macOS 15+)", Settings.recordingMicrophone) { Settings.recordingMicrophone = $0 }
         toggle("Show clicks in recordings (macOS 15+)", Settings.recordClicks) { Settings.recordClicks = $0 }
+        popup("Click color (display / area)", ["Pink", "Blue", "Green", "Yellow", "White"], Settings.clickColor) { Settings.clickColor = $0 }
+        popup("Click size", ["Small", "Medium", "Large"], [24, 40, 64].firstIndex(of: Int(Settings.clickSize)) ?? 1) { Settings.clickSize = CGFloat([24, 40, 64][$0]) }
+        toggle("Filled click circles", Settings.clickFilled) { Settings.clickFilled = $0 }
+        toggle("Animate click circles", Settings.clickAnimated) { Settings.clickAnimated = $0 }
         toggle("Record camera (display / area, macOS 15+)", Settings.recordCamera) { Settings.recordCamera = $0 }
         popup("Camera position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.cameraCorner) { Settings.cameraCorner = $0 }
         popup("Camera size", ["Small", "Medium", "Large"], [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }
@@ -76,6 +87,9 @@ final class SettingsWindow: NSWindow {
         popup("Keystroke position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.keysCorner) { Settings.keysCorner = $0 }
         popup("Keystroke size", ["Small", "Medium", "Large"], [17, 23, 30].firstIndex(of: Int(Settings.keysSize)) ?? 1) { Settings.keysSize = CGFloat([17, 23, 30][$0]) }
         toggle("Hide desktop icons while recording", Settings.hideDesktop) { Settings.hideDesktop = $0 }
+        toggle("Use Focus shortcuts while recording", Settings.focusEnabled) { Settings.focusEnabled = $0 }
+        let focus = ClosureButton(frame: .zero) { FocusAutomation.configure() }
+        focus.title = "Configure Focus Shortcuts…"; focus.bezelStyle = .rounded; stack.addArrangedSubview(focus)
         toggle("Launch at login", SMAppService.mainApp.status == .enabled) { enabled in
             do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
             catch { NSAlert(error: error).runModal() }

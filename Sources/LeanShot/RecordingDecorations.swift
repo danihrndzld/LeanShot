@@ -7,11 +7,14 @@ final class RecordingDecorations {
     private var camera: NSPanel?
     private var keys: NSPanel?
     private var desktop: NSPanel?
+    private var clicks: NSPanel?
+    private var clickView: ClickOverlay?
+    private var clickMonitor: Any?
     private var session: AVCaptureSession?
     private var monitor: Any?
     private var keyGeneration = 0
     private let cameraQueue = DispatchQueue(label: "LeanShot.camera")
-    var windowIDs: Set<CGWindowID> { Set([camera, keys, desktop].compactMap { $0.map { CGWindowID($0.windowNumber) } }) }
+    var windowIDs: Set<CGWindowID> { Set([camera, keys, desktop, clicks].compactMap { $0.map { CGWindowID($0.windowNumber) } }) }
 
     @MainActor func prepare(screen: NSScreen?, region: CGRect?) async throws {
         let bounds = region ?? screen?.visibleFrame ?? .zero
@@ -22,6 +25,15 @@ final class RecordingDecorations {
             let image = NSImageView(frame: NSRect(origin: .zero, size: screen.frame.size))
             if let url = NSWorkspace.shared.desktopImageURL(for: screen) { image.image = NSImage(contentsOf: url) }
             image.imageScaling = .scaleAxesIndependently; panel.contentView = image; panel.orderFrontRegardless(); desktop = panel
+        }
+        if Settings.recordClicks {
+            let panel = Self.panel(bounds); panel.ignoresMouseEvents = true
+            let view = ClickOverlay(frame: CGRect(origin: .zero, size: bounds.size)); panel.contentView = view; panel.orderFrontRegardless()
+            clicks = panel; clickView = view
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak view] _ in
+                let p = NSEvent.mouseLocation
+                if bounds.contains(p) { view?.show(at: CGPoint(x: p.x - bounds.minX, y: p.y - bounds.minY)) }
+            }
         }
         if Settings.recordCamera {
             guard await AVCaptureDevice.requestAccess(for: .video) else { throw Self.error("Enable Camera access in System Settings or disable camera recording in LeanShot Settings.") }
@@ -79,6 +91,8 @@ final class RecordingDecorations {
         camera?.orderOut(nil); camera?.contentView = nil; camera = nil
         keys?.orderOut(nil); keys?.contentView = nil; keys = nil
         desktop?.orderOut(nil); desktop?.contentView = nil; desktop = nil
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor); self.clickMonitor = nil }
+        clickView?.stop(); clickView = nil; clicks?.orderOut(nil); clicks?.contentView = nil; clicks = nil
         if let session { self.session = nil; cameraQueue.async { session.stopRunning() } }
     }
     private static func panel(_ rect: NSRect) -> NSPanel {

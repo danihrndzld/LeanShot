@@ -158,10 +158,12 @@ final class Canvas: NSView, NSTextFieldDelegate {
     func render(in rect: NSRect) {
         image.draw(in: rect)
         let spotlights = marks.filter { $0.tool == .spotlight }
-        if !spotlights.isEmpty {
-            let dim = NSBezierPath(rect: rect); dim.windingRule = .evenOdd
-            spotlights.forEach { dim.append(NSBezierPath(roundedRect: $0.rect, xRadius: 6, yRadius: 6)) }
-            NSColor.black.withAlphaComponent(0.62).setFill(); dim.fill()
+        if !spotlights.isEmpty, let context = NSGraphicsContext.current?.cgContext {
+            context.saveGState(); context.beginTransparencyLayer(auxiliaryInfo: nil)
+            NSColor.black.withAlphaComponent(0.62).setFill(); rect.fill()
+            context.setBlendMode(.clear)
+            spotlights.forEach { NSBezierPath(roundedRect: $0.rect, xRadius: 6, yRadius: 6).fill() }
+            context.setBlendMode(.normal); context.endTransparencyLayer(); context.restoreGState()
         }
         var counter = 0
         for m in marks {
@@ -690,6 +692,9 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             for (sub, t) in zip(group.subitems, Tool.visible) { sub.toolTip = "\(t.label) (\(t.key.uppercased()))" }
             group.selectedIndex = canvas.tool.rawValue
             group.controlRepresentation = .expanded
+            if let control = group.view as? NSSegmentedControl {
+                for index in Tool.visible.indices { control.setWidth(26, forSegment: index) }
+            }
             toolsItem = group
             return group
         case .color:
@@ -893,6 +898,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let editingText = firstResponder is NSTextView
         if editingText, event.charactersIgnoringModifiers == "\r" { return false } // Return commits text, not Done
+        if !editingText, event.keyCode == 36, event.modifierFlags.intersection([.command, .control, .option]).isEmpty { done(); return true }
         if editingText, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers {
             let edits: [String: Selector] = ["x": #selector(NSText.cut(_:)), "c": #selector(NSText.copy(_:)),
                                              "v": #selector(NSText.paste(_:)), "a": #selector(NSText.selectAll(_:)),

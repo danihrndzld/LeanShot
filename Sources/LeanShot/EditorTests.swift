@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import ImageIO
+import CoreImage
 
 final class EditorTests {
     static func runVideo() async throws {
@@ -26,8 +27,14 @@ final class EditorTests {
         let length = try await composition.load(.duration).seconds
         check(abs(length - 0.3) < 0.01, "Trim / speed produced wrong duration")
         checkEqual(try await composition.loadTracks(withMediaType: .audio).count, 0)
-        let video = try await VideoEditor.videoComposition(composition, aspect: 2, background: 2)
+        let timeline = MotionTimeline(samples: [MotionSample(time: 0, x: 0.25, y: 0.75, click: false), MotionSample(time: 0.4, x: 0.25, y: 0.75, click: true), MotionSample(time: 1, x: 0.75, y: 0.25, click: false)])
+        let video = try await VideoEditor.videoComposition(composition, aspect: 2, background: 2, motion: timeline, start: 0.2, rate: 2)
         checkEqual(video.renderSize.width, video.renderSize.height)
+        let instruction = video.instructions[0] as! AVMutableVideoCompositionInstruction
+        let layer = instruction.layerInstructions[0]
+        var from = CGAffineTransform.identity, to = CGAffineTransform.identity, range = CMTimeRange.zero
+        check(layer.getTransformRamp(for: CMTime(seconds: 0.1, preferredTimescale: 600), start: &from, end: &to, timeRange: &range))
+        checkGreater(to.a, 1, "Smart zoom did not enlarge the source around a click")
         let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality)!
         session.outputURL = output; session.outputFileType = .mp4; session.videoComposition = video
         await session.export(); guard session.status == .completed else { throw session.error ?? CocoaError(.fileWriteUnknown) }
@@ -37,7 +44,9 @@ final class EditorTests {
         let track = try await saved.loadTracks(withMediaType: .video).first!
         let dimensions = try await track.load(.naturalSize)
         checkEqual(dimensions.width, dimensions.height)
-        try await VideoEditor.exportGIF(asset: composition, video: video, to: gif)
+        var cursorTimeline = timeline; cursorTimeline.sourceSize = CGSize(width: 160, height: 120)
+        let effects = VideoEffects(motion: cursorTimeline, zoom: timeline, start: 0.2, rate: 2, aspect: 2, blur: true, cursorStyle: 3, cursorScale: 1.5)
+        try await VideoEditor.exportGIF(asset: saved, video: effects.composition(for: saved), to: gif)
         let decoded = CGImageSourceCreateWithURL(gif as CFURL, nil)!
         checkEqual(CGImageSourceGetCount(decoded), 3)
         checkNotNil(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
@@ -55,7 +64,11 @@ final class EditorTests {
         tests.testCaptureFilenamesNeverCollide()
         try tests.testHistoryFiltersFilesAndPreservesOriginals()
         tests.testScrollingOverlapAndDuplicates()
-        print("9 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, backgrounds, filenames, history, scrolling")
+        try tests.testMotionTimeline()
+        tests.testCursorEffects()
+        try tests.testOverlayReleasesWindow()
+        tests.testOverlappingSpotlights()
+        print("13 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, backgrounds, filenames, history, scrolling, motion tracking, cursor effects, overlay lifecycle, spotlights")
     }
     private func fixture() -> NSImage {
         ImageTools.render(size: NSSize(width: 100, height: 60), pixels: NSSize(width: 200, height: 120)) { r in
@@ -157,6 +170,56 @@ final class EditorTests {
             checkEqual(horizontal ? result.size.height : result.size.width, 120)
         }
     }
+    func testMotionTimeline() throws {
+        let timeline = MotionTimeline(samples: [MotionSample(time: 0, x: 0, y: 0.5, click: false), MotionSample(time: 1, x: 1, y: 0.5, click: true), MotionSample(time: 2, x: 0, y: 0.5, click: false)], sourceSize: CGSize(width: 160, height: 120))
+        checkEqual(timeline.position(at: 0.5), CGPoint(x: 0.5, y: 0.5))
+        checkEqual(timeline.position(at: 5), CGPoint(x: 0, y: 0.5))
+        checkEqual(timeline.zoom(at: 1.5, clicks: [1]), 1.5)
+        checkEqual(timeline.zoom(at: 4, clicks: [1]), 1)
+        let jitter = MotionTimeline(samples: [MotionSample(time: 0, x: 0, y: 0, click: false), MotionSample(time: 0.05, x: 1, y: 1, click: true)])
+        checkLess(jitter.smoothed().samples[1].x, 0.5)
+        check(jitter.smoothed().samples[1].click, "Smoothing lost click timing")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let recording = directory.appendingPathComponent("recording.mp4"), file = MotionTimeline.url(for: recording)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONEncoder().encode(timeline).write(to: file)
+        checkEqual(MotionTimeline.read(for: recording)?.samples.count, 3)
+        var invalid = timeline; invalid.version = 99
+        try JSONEncoder().encode(invalid).write(to: file); check(MotionTimeline.read(for: recording) == nil)
+    }
+    func testCursorEffects() {
+        let size = CGSize(width: 160, height: 120), rect = CGRect(origin: .zero, size: size)
+        let source = CIImage(color: CIColor(red: 1, green: 0, blue: 0)).cropped(to: rect)
+        let motion = MotionTimeline(samples: [MotionSample(time: 0, x: 0.5, y: 0.5, click: false)], sourceSize: size)
+        let effects = VideoEffects(motion: motion, zoom: nil, start: 0, rate: 1, aspect: 0, blur: false, cursorStyle: 3, cursorScale: 1)
+        let context = CIContext()
+        let rendered = context.createCGImage(effects.render(source, at: 0), from: rect)!
+        let pixel = NSBitmapImageRep(cgImage: rendered).colorAt(x: 80, y: 60)!.usingColorSpace(.sRGB)!
+        checkGreater(pixel.blueComponent, 0.6, "Editable cursor was not composited at the tracked position")
+        var original = motion; original.sourceHasCursor = true
+        let unchanged = VideoEffects(motion: original, zoom: nil, start: 0, rate: 1, aspect: 0, blur: false, cursorStyle: 3, cursorScale: 2)
+        let result = context.createCGImage(unchanged.render(source, at: 0), from: rect)!
+        let red = NSBitmapImageRep(cgImage: result).colorAt(x: 80, y: 60)!.usingColorSpace(.sRGB)!
+        checkGreater(red.redComponent, 0.9); checkLess(red.blueComponent, 0.1)
+    }
+    func testOverlayReleasesWindow() throws {
+        let url = Capture.tempURL("png"); try ImageTools.png(fixture())!.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        weak var released: OverlayCard?
+        autoreleasepool {
+            var card: OverlayCard? = OverlayCard(url: url, screen: NSScreen.main)
+            released = card; QuickAccess.close(card!); card = nil
+        }
+        check(released == nil, "Closed overlay retained its panel through contentView")
+    }
+    func testOverlappingSpotlights() {
+        let canvas = Canvas(image: fixture())
+        canvas.marks = [Mark(tool: .spotlight, points: [CGPoint(x: 50, y: 10), CGPoint(x: 80, y: 50)], color: .white, width: 4), Mark(tool: .spotlight, points: [CGPoint(x: 60, y: 10), CGPoint(x: 90, y: 50)], color: .white, width: 4)]
+        let image = canvas.export()
+        checkGreater(color(image, 140, 60).greenComponent, 0.9, "Overlapping spotlight interiors were dimmed")
+        checkLess(color(image, 190, 60).greenComponent, 0.7)
+    }
     func testHistoryFiltersFilesAndPreservesOriginals() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -170,7 +233,7 @@ final class EditorTests {
 private func check(_ value: @autoclosure () -> Bool, _ message: String = "Assertion failed", file: StaticString = #file, line: UInt = #line) { precondition(value(), message, file: file, line: line) }
 private func checkEqual<T: Equatable>(_ a: T, _ b: T, _ message: String = "Values differ", file: StaticString = #file, line: UInt = #line) { precondition(a == b, "\(message): \(a) != \(b)", file: file, line: line) }
 private func checkNotEqual<T: Equatable>(_ a: T, _ b: T) { precondition(a != b) }
-private func checkGreater<T: Comparable>(_ a: T, _ b: T) { precondition(a > b) }
+private func checkGreater<T: Comparable>(_ a: T, _ b: T, _ message: String = "Expected greater value") { precondition(a > b, message) }
 private func checkLess<T: Comparable>(_ a: T, _ b: T) { precondition(a < b) }
 private func checkNotNil<T>(_ value: T?) { precondition(value != nil) }
 private func checkThrows<T>(_ value: @autoclosure () throws -> T) { do { _ = try value(); preconditionFailure("Expected error") } catch {} }

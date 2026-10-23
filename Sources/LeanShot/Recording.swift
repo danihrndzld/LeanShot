@@ -15,6 +15,11 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     private(set) var busy = false
     private var recording = false
     private let decorations = RecordingDecorations()
+    private let motion = MotionRecorder()
+    private var recordingBounds: CGRect?
+    private var sourceHasCursor = false
+    private let focus = FocusAutomation()
+    private var termination: ((Bool) -> Void)?
 
     func chooseWindow(completion: @escaping (URL?) -> Void) {
         guard !busy, Capture.current == nil, !RegionSelector.isSelecting else { NSSound.beep(); return }
@@ -32,6 +37,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
                 NSApp.activate(ignoringOtherApps: true)
                 guard alert.runModal() == .alertFirstButtonReturn else { busy = false; return }
                 let window = windows[picker.indexOfSelectedItem]
+                recordingBounds = nil
                 busy = false
                 await start(filter: SCContentFilter(desktopIndependentWindow: window), sourceRect: nil, size: window.frame.size, completion: completion)
             } catch { busy = false; NSAlert(error: error).runModal() }
@@ -45,6 +51,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
         Task { @MainActor in
             do {
                 let globalRegion = region.map { CGRect(x: $0.screen.frame.minX + $0.rect.minX, y: $0.screen.frame.minY + $0.rect.minY, width: $0.rect.width, height: $0.rect.height) }
+                recordingBounds = globalRegion ?? screen?.frame
                 try await decorations.prepare(screen: screen, region: globalRegion)
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let display = content.displays.first(where: { $0.displayID == id }) else { throw CocoaError(.featureUnsupported) }
@@ -59,16 +66,19 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     @MainActor private func start(filter: SCContentFilter, sourceRect: CGRect?, size: CGSize, completion: @escaping (URL?) -> Void) async {
         guard !busy else { NSSound.beep(); return }; busy = true; didFinish = completion
         do {
+            onStatus?("Starting…")
+            try await focus.begin()
             if Settings.recordingMicrophone {
                 guard await AVCaptureDevice.requestAccess(for: .audio) else { throw NSError(domain: "LeanShot", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microphone access is disabled. Enable it in System Settings or disable microphone recording in LeanShot Settings."]) }
             }
             let config = SCStreamConfiguration()
-            let scale = min(2, 3840 / max(size.width, size.height))
+            let scale = min(2, CGFloat(Settings.recordingResolution) / max(size.width, size.height))
             config.width = max(2, Int(size.width * scale) / 2 * 2); config.height = max(2, Int(size.height * scale) / 2 * 2)
             if let sourceRect { config.sourceRect = sourceRect }
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(Settings.recordingFPS))
             config.showsCursor = Settings.captureCursor
-            config.showMouseClicks = Settings.recordClicks
+            sourceHasCursor = config.showsCursor
+            config.showMouseClicks = Settings.recordClicks && recordingBounds == nil
             config.capturesAudio = Settings.recordingAudio; config.excludesCurrentProcessAudio = true
             config.captureMicrophone = Settings.recordingMicrophone
             config.queueDepth = 5
@@ -87,10 +97,15 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
         recording = false; timer?.invalidate(); onStatus?("Saving…")
         Task { @MainActor in do { try await stream.stopCapture() } catch { fail(error) } }
     }
+    func stopForTermination(_ completion: @escaping (Bool) -> Void) -> Bool {
+        guard recording else { return false }
+        termination = completion; stop(); return true
+    }
     func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.busy, self.output === recordingOutput else { return }
             self.recording = true; self.startTime = Date(); self.onStatus?("● 00:00")
+            if let bounds = self.recordingBounds { self.motion.start(in: bounds) }
             self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 guard let self else { return }; let seconds = Int(Date().timeIntervalSince(self.startTime))
                 self.onStatus?(String(format: "● %02d:%02d", seconds / 60, seconds % 60))
@@ -111,6 +126,9 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     private func finish(_ result: URL?) {
         timer?.invalidate(); timer = nil; stream = nil; output = nil; url = nil; busy = false; recording = false
         decorations.stop()
+        let quit = termination; termination = nil
+        focus.end { quit?(result != nil) }
+        motion.finish(to: result, sourceHasCursor: sourceHasCursor); recordingBounds = nil
         onStatus?(nil); QuickAccess.resume()
         let completion = didFinish; didFinish = nil; completion?(result)
     }

@@ -2,6 +2,7 @@ import AppKit
 import AVKit
 import ImageIO
 import UniformTypeIdentifiers
+import CoreImage
 
 final class VideoEditor: NSWindow, NSWindowDelegate {
     private static var windows: [VideoEditor] = []
@@ -13,35 +14,57 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
     private let aspect = NSPopUpButton()
     private let background = NSPopUpButton()
     private let mute = NSButton(checkboxWithTitle: "Mute audio", target: nil, action: nil)
+    private let smartZoom = NSButton(checkboxWithTitle: "Smart zoom", target: nil, action: nil)
+    private let smoothTracking = NSButton(checkboxWithTitle: "Smooth tracking", target: nil, action: nil)
+    private let motionBlur = NSButton(checkboxWithTitle: "Motion blur", target: nil, action: nil)
+    private var motion: MotionTimeline?
     private let progress = NSTextField(labelWithString: "Loading video…")
     private var duration: Double = 0
     private var exporting = false
-    private var session: AVAssetExportSession?
+    private let cursorStyle = NSPopUpButton()
+    private let cursorSize = NSPopUpButton()
+    private let smoothCursor = NSButton(checkboxWithTitle: "Smooth cursor", target: nil, action: nil)
 
     static func open(_ url: URL) {
         let w = VideoEditor(url: url); windows.append(w)
+        if let screen = NSScreen.main?.visibleFrame {
+            w.minSize = NSSize(width: min(760, screen.width * 0.9), height: min(620, screen.height * 0.85))
+            w.setContentSize(NSSize(width: min(960, screen.width * 0.9), height: min(740, screen.height * 0.85)))
+        }
         w.center(); NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
     }
     private init(url: URL) {
         self.url = url
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 960, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 960, height: 740), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         title = "Edit Recording — \(url.lastPathComponent)"; delegate = self; isReleasedWhenClosed = false
-        minSize = NSSize(width: 760, height: 540)
+        minSize = NSSize(width: 760, height: 620)
         guard let content = contentView else { return }
-        playerView.frame = NSRect(x: 20, y: 178, width: 920, height: 462)
+        playerView.frame = NSRect(x: 20, y: 258, width: 920, height: 462)
         playerView.autoresizingMask = [.width, .height]; playerView.player = AVPlayer(url: url); playerView.controlsStyle = .floating
         content.addSubview(playerView)
-        let row = NSStackView(frame: NSRect(x: 20, y: 124, width: 920, height: 32)); row.spacing = 12
+        let row = NSStackView(frame: NSRect(x: 20, y: 204, width: 920, height: 32)); row.spacing = 12; row.autoresizingMask = [.width]
         row.addArrangedSubview(NSTextField(labelWithString: "Trim from (s)")); startField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(startField)
         row.addArrangedSubview(NSTextField(labelWithString: "to")); endField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(endField)
         speed.addItems(withTitles: ["0.5×", "1×", "1.5×", "2×"]); speed.selectItem(at: 1); row.addArrangedSubview(speed)
         row.addArrangedSubview(mute); content.addSubview(row)
-        let style = NSStackView(frame: NSRect(x: 20, y: 78, width: 920, height: 32)); style.spacing = 12
+        let style = NSStackView(frame: NSRect(x: 20, y: 158, width: 920, height: 32)); style.spacing = 12; style.autoresizingMask = [.width]
         aspect.addItems(withTitles: ["Original", "Landscape 16:9", "Square", "Portrait 9:16"])
         background.addItems(withTitles: ["Black", "White", "Lavender", "Ocean", "Peach", "Mint"])
         style.addArrangedSubview(NSTextField(labelWithString: "Format")); style.addArrangedSubview(aspect)
         style.addArrangedSubview(NSTextField(labelWithString: "Background")); style.addArrangedSubview(background); content.addSubview(style)
-        progress.frame = NSRect(x: 20, y: 24, width: 500, height: 24); content.addSubview(progress)
+        let effects = NSStackView(frame: NSRect(x: 20, y: 118, width: 920, height: 32)); effects.spacing = 16; effects.autoresizingMask = [.width]
+        effects.addArrangedSubview(smartZoom); effects.addArrangedSubview(smoothTracking); effects.addArrangedSubview(motionBlur); content.addSubview(effects); smoothTracking.state = .on
+        motion = MotionTimeline.read(for: url); smartZoom.isEnabled = motion != nil; smoothTracking.isEnabled = motion != nil
+        motionBlur.isEnabled = motion != nil
+        let cursorRow = NSStackView(frame: NSRect(x: 20, y: 78, width: 920, height: 32)); cursorRow.spacing = 12; cursorRow.autoresizingMask = [.width]
+        cursorStyle.addItems(withTitles: ["Original cursor", "White arrow", "Black arrow", "Accent dot"])
+        cursorSize.addItems(withTitles: ["1×", "1.5×", "2×"]); smoothCursor.state = .on
+        cursorRow.addArrangedSubview(NSTextField(labelWithString: "Cursor")); cursorRow.addArrangedSubview(cursorStyle); cursorRow.addArrangedSubview(cursorSize); cursorRow.addArrangedSubview(smoothCursor); content.addSubview(cursorRow)
+        let editable = motion != nil && motion?.sourceHasCursor == false
+        cursorStyle.isEnabled = editable; cursorSize.isEnabled = editable; smoothCursor.isEnabled = editable
+        cursorStyle.toolTip = "Record with the pointer disabled to replace, resize and smooth it at export"
+        smartZoom.toolTip = "Cursor-following zooms around clicks in LeanShot display/area recordings"
+        progress.frame = NSRect(x: 20, y: 24, width: 500, height: 24); progress.autoresizingMask = [.width]; content.addSubview(progress)
         for (i, title) in ["Export MP4…", "Export GIF…"].enumerated() {
             let b = ClosureButton(frame: NSRect(x: 640 + i * 154, y: 20, width: 144, height: 32)) { [weak self] in self?.export(gif: i == 1) }
             b.title = title; b.bezelStyle = .rounded; b.autoresizingMask = [.minXMargin]; content.addSubview(b)
@@ -69,27 +92,43 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
             let rate = [0.5, 1.0, 1.5, 2.0][self.speed.indexOfSelectedItem]
             self.exporting = true; self.progress.stringValue = "Exporting…"; self.playerView.player?.pause()
             let aspect = self.aspect.indexOfSelectedItem, bg = self.background.indexOfSelectedItem, muted = self.mute.state == .on
+            let motion = self.smartZoom.state == .on ? (self.smoothTracking.state == .on ? self.motion?.smoothed() : self.motion) : nil
+            let blur = self.motionBlur.state == .on
+            let cursorStyle = self.cursorStyle.indexOfSelectedItem, cursorScale = [1.0, 1.5, 2.0][self.cursorSize.indexOfSelectedItem]
+            let cursorMotion = self.smoothCursor.state == .on ? self.motion?.smoothed() : self.motion
             let temporary = Capture.tempURL(gif ? "gif" : "mp4")
+            let intermediate = Capture.tempURL("mp4")
             Task { @MainActor in
+                defer { try? FileManager.default.removeItem(at: intermediate) }
                 do {
                     let composition = try await Self.composition(url: self.url, start: start, end: end, rate: rate, muted: muted)
-                    let video = try await Self.videoComposition(composition, aspect: aspect, background: bg)
+                    let video = try await Self.videoComposition(composition, aspect: aspect, background: bg, motion: motion, start: start, rate: rate)
+                    var exportAsset: AVAsset = composition, exportVideo = video
+                    if let cursorMotion, blur && motion != nil || cursorStyle > 0 {
+                        try await Self.exportMP4(asset: composition, video: video, to: intermediate)
+                        let asset = AVURLAsset(url: intermediate)
+                        _ = try await asset.load(.duration); _ = try await asset.loadTracks(withMediaType: .video)
+                        let effects = VideoEffects(motion: cursorMotion, zoom: motion, start: start, rate: rate, aspect: aspect, blur: blur, cursorStyle: cursorStyle, cursorScale: cursorScale)
+                        exportAsset = asset; exportVideo = effects.composition(for: asset)
+                    }
                     if gif {
-                        try await Self.exportGIF(asset: composition, video: video, to: temporary) { [weak self] percent in self?.progress.stringValue = "Exporting GIF… \(percent)%" }
+                        try await Self.exportGIF(asset: exportAsset, video: exportVideo, to: temporary) { [weak self] percent in self?.progress.stringValue = "Exporting GIF… \(percent)%" }
                     }
                     else {
-                        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else { throw CocoaError(.featureUnsupported) }
-                        self.session = session; session.outputURL = temporary; session.outputFileType = .mp4; session.videoComposition = video; session.shouldOptimizeForNetworkUse = true
-                        await session.export()
-                        guard session.status == .completed else { throw session.error ?? CocoaError(.fileWriteUnknown) }; self.session = nil
+                        try await Self.exportMP4(asset: exportAsset, video: exportVideo, to: temporary)
                     }
                     // Commit only a fully finished export; cancellation/errors leave destination unchanged.
                     try Data(contentsOf: temporary, options: .mappedIfSafe).write(to: destination, options: .atomic)
                     self.progress.stringValue = "Exported \(destination.lastPathComponent)"; QuickAccess.show(destination)
                 } catch { self.progress.stringValue = "Export failed"; NSAlert(error: error).runModal() }
-                try? FileManager.default.removeItem(at: temporary); self.exporting = false; self.session = nil
+                try? FileManager.default.removeItem(at: temporary); self.exporting = false
             }
         }
+    }
+    static func exportMP4(asset: AVAsset, video: AVVideoComposition, to url: URL) async throws {
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else { throw CocoaError(.featureUnsupported) }
+        session.outputURL = url; session.outputFileType = .mp4; session.videoComposition = video; session.shouldOptimizeForNetworkUse = true
+        await session.export(); guard session.status == .completed else { throw session.error ?? CocoaError(.fileWriteUnknown) }
     }
 
     static func composition(url: URL, start: Double, end: Double, rate: Double, muted: Bool) async throws -> AVMutableComposition {
@@ -106,7 +145,7 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
         composition.scaleTimeRange(CMTimeRange(start: .zero, duration: range.duration), toDuration: CMTime(seconds: (end - start) / rate, preferredTimescale: 600))
         return composition
     }
-    static func videoComposition(_ asset: AVAsset, aspect: Int, background: Int) async throws -> AVVideoComposition {
+    static func videoComposition(_ asset: AVAsset, aspect: Int, background: Int, motion: MotionTimeline? = nil, start: Double = 0, rate: Double = 1) async throws -> AVVideoComposition {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw CocoaError(.fileReadCorruptFile) }
         let natural = try await track.load(.naturalSize), transform = try await track.load(.preferredTransform)
         let oriented = CGRect(origin: .zero, size: natural).applying(transform).standardized
@@ -120,7 +159,27 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
         let x = (size.width - oriented.width * scale) / 2, y = (size.height - oriented.height * scale) / 2
         let adjusted = transform.concatenating(CGAffineTransform(translationX: -oriented.minX, y: -oriented.minY)).concatenating(CGAffineTransform(scaleX: scale, y: scale)).concatenating(CGAffineTransform(translationX: x, y: y))
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track); layer.setTransform(adjusted, at: .zero)
-        let instruction = AVMutableVideoCompositionInstruction(); instruction.timeRange = CMTimeRange(start: .zero, duration: try await asset.load(.duration)); instruction.layerInstructions = [layer]
+        let duration = try await asset.load(.duration)
+        if let motion {
+            let clicks = motion.samples.filter(\.click).map(\.time)
+            func state(_ time: Double) -> (CGAffineTransform, CGRect) {
+                let sourceTime = start + time * rate, zoom = motion.zoom(at: sourceTime, clicks: clicks)
+                let point = motion.position(at: sourceTime), margin = 0.5 / zoom
+                let cx = min(1 - margin, max(margin, point.x)), cy = min(1 - margin, max(margin, 1 - point.y))
+                let crop = CGRect(x: (cx - margin) * natural.width, y: (cy - margin) * natural.height, width: natural.width / zoom, height: natural.height / zoom)
+                let t = CGAffineTransform(scaleX: scale * zoom, y: scale * zoom).concatenating(CGAffineTransform(translationX: x - crop.minX * scale * zoom, y: y - crop.minY * scale * zoom))
+                return (t, crop)
+            }
+            var previous = state(0); layer.setTransform(previous.0, at: .zero); layer.setCropRectangle(previous.1, at: .zero)
+            var time = 0.0
+            while time < duration.seconds {
+                let next = min(duration.seconds, time + 0.1), current = state(next)
+                let range = CMTimeRange(start: CMTime(seconds: time, preferredTimescale: 600), end: CMTime(seconds: next, preferredTimescale: 600))
+                layer.setTransformRamp(fromStart: previous.0, toEnd: current.0, timeRange: range); layer.setCropRectangleRamp(fromStartCropRectangle: previous.1, toEndCropRectangle: current.1, timeRange: range)
+                time = next; previous = current
+            }
+        }
+        let instruction = AVMutableVideoCompositionInstruction(); instruction.timeRange = CMTimeRange(start: .zero, duration: duration); instruction.layerInstructions = [layer]
         let colors: [NSColor] = [.black, .white, NSColor(srgbRed: 0.8, green: 0.77, blue: 0.94, alpha: 1), NSColor(srgbRed: 0.3, green: 0.5, blue: 0.7, alpha: 1), NSColor(srgbRed: 0.95, green: 0.75, blue: 0.6, alpha: 1), NSColor(srgbRed: 0.7, green: 0.88, blue: 0.8, alpha: 1)]
         instruction.backgroundColor = colors[min(max(0, background), colors.count - 1)].cgColor
         let result = AVMutableVideoComposition(); result.renderSize = size; result.frameDuration = CMTime(value: 1, timescale: 30); result.instructions = [instruction]
