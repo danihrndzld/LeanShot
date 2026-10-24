@@ -6,7 +6,7 @@ final class FocusAutomation {
     private var endShortcut: String?
     func begin() async throws {
         guard Settings.focusEnabled else { return }
-        let start = Settings.defaults.string(forKey: "focusStart") ?? "", end = Settings.defaults.string(forKey: "focusEnd") ?? ""
+        let start = Settings.focusStart, end = Settings.focusEnd
         guard !start.isEmpty, !end.isEmpty else { throw NSError(domain: "LeanShot", code: 4, userInfo: [NSLocalizedDescriptionKey: "Configure both Focus shortcuts in LeanShot Settings before enabling Focus automation."]) }
         endShortcut = end
         _ = try await Self.command(["run", start])
@@ -27,8 +27,8 @@ final class FocusAutomation {
                 let names = result.split(separator: "\n").map(String.init).sorted()
                 let start = NSPopUpButton(), end = NSPopUpButton()
                 for picker in [start, end] { picker.addItems(withTitles: ["Disabled"] + names) }
-                if let name = Settings.defaults.string(forKey: "focusStart") { start.selectItem(withTitle: name) }
-                if let name = Settings.defaults.string(forKey: "focusEnd") { end.selectItem(withTitle: name) }
+                start.selectItem(withTitle: Settings.focusStart)
+                end.selectItem(withTitle: Settings.focusEnd)
                 let alert = NSAlert(); alert.messageText = "Focus Automation"
                 alert.informativeText = "In the Shortcuts app, create a shortcut using Set Focus to enable Do Not Disturb, and another to restore your preferred Focus state. Choose those shortcuts below. LeanShot runs them automatically at recording start/end."
                 let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
@@ -36,8 +36,8 @@ final class FocusAutomation {
                 stack.frame = NSRect(x: 0, y: 0, width: 320, height: 120); alert.accessoryView = stack
                 alert.addButton(withTitle: "Save"); alert.addButton(withTitle: "Cancel"); NSApp.activate(ignoringOtherApps: true)
                 if alert.runModal() == .alertFirstButtonReturn {
-                    Settings.defaults.set(start.indexOfSelectedItem > 0 ? start.titleOfSelectedItem : "", forKey: "focusStart")
-                    Settings.defaults.set(end.indexOfSelectedItem > 0 ? end.titleOfSelectedItem : "", forKey: "focusEnd")
+                    Settings.focusStart = start.indexOfSelectedItem > 0 ? start.titleOfSelectedItem ?? "" : ""
+                    Settings.focusEnd = end.indexOfSelectedItem > 0 ? end.titleOfSelectedItem ?? "" : ""
                 }
             } catch { NSAlert(error: error).runModal() }
         }

@@ -1,15 +1,19 @@
 import AppKit
+import Carbon
+import Quartz
 
-final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, QLPreviewPanelDataSource {
     private static var instance: HistoryWindow?
     private var files: [URL] = []
     private let table = NSTableView()
     private let search = NSSearchField()
     private let filter = NSPopUpButton()
+    private let empty = NSTextField(wrappingLabelWithString: "")
+    private static let age = RelativeDateTimeFormatter()
 
     static func show() {
         let w = instance ?? HistoryWindow()
-        instance = w; w.reload(); w.center(); NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
+        instance = w; w.reload(); if !w.isVisible, !w.setFrameUsingName("History") { w.centerOnPointerScreen() }; w.setFrameAutosaveName("History"); NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
     }
     private init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -27,13 +31,33 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
         table.addTableColumn(column); table.headerView = nil; table.rowHeight = 68
         table.dataSource = self; table.delegate = self; table.target = self; table.doubleAction = #selector(openSelected)
         scroll.documentView = table; content.addSubview(scroll)
-        let actions: [(String, Selector)] = [("Open", #selector(openSelected)), ("Copy", #selector(copySelected)), ("Show in Finder", #selector(reveal)), ("Move to Trash", #selector(trash))]
-        for (i, pair) in actions.enumerated() {
-            let b = NSButton(title: pair.0, target: self, action: pair.1)
+        // Finder-style keys: Return opens, ⌘C copies, ⌘⌫ trashes, Space previews, ⌘F searches.
+        let actions: [(String, Selector, String, NSEvent.ModifierFlags)] = [("Open", #selector(openSelected), "\r", []), ("Copy", #selector(copySelected), "c", .command),
+                                                                            ("Show in Finder", #selector(reveal), "r", .command), ("Move to Trash", #selector(trash), "\u{8}", .command)]
+        for (i, action) in actions.enumerated() {
+            let b = NSButton(title: action.0, target: self, action: action.1)
             b.frame = NSRect(x: 20 + i * 150, y: 18, width: 140, height: 30); b.bezelStyle = .rounded
+            b.keyEquivalent = action.2; b.keyEquivalentModifierMask = action.3
             content.addSubview(b)
         }
+        empty.frame = NSRect(x: 60, y: 220, width: 620, height: 60); empty.alignment = .center; empty.textColor = .secondaryLabelColor
+        empty.font = .systemFont(ofSize: 15); empty.autoresizingMask = [.width, .minYMargin, .maxYMargin]; content.addSubview(empty)
     }
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " { quickLook() }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { makeFirstResponder(search) }
+        else { super.keyDown(with: event) }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { makeFirstResponder(search); return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    private func quickLook() {
+        guard selected != nil, let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self; panel.reloadData(); panel.makeKeyAndOrderFront(nil)
+    }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { selected == nil ? 0 : 1 }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { selected as NSURL? }
     required init?(coder: NSCoder) { fatalError() }
     @objc private func reload() {
         let query = search.stringValue
@@ -49,6 +73,10 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
             return typeMatches && (query.isEmpty || $0.lastPathComponent.localizedCaseInsensitiveContains(query))
         }
         table.reloadData()
+        empty.isHidden = !files.isEmpty
+        empty.stringValue = query.isEmpty && filter.indexOfSelectedItem == 0
+            ? "No captures yet. Press \(Hotkeys.label(UInt32(kVK_ANSI_4))) to capture an area." : "No captures match “\(query)”."
+        if table.selectedRow < 0, !files.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
     }
     func controlTextDidChange(_ obj: Notification) { reload() }
     func numberOfRows(in tableView: NSTableView) -> Int { files.count }
@@ -56,9 +84,17 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
         let url = files[row]
         let cell = NSView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 68))
         let thumb = DragImageView(frame: NSRect(x: 4, y: 6, width: 88, height: 56))
-        thumb.url = url; thumb.image = NSImage(contentsOf: url) ?? NSWorkspace.shared.icon(forFile: url.path)
+        thumb.url = url; thumb.image = NSWorkspace.shared.icon(forFile: url.path)
+        // Decoding a Retina capture takes ~55 ms; rows appear at once and fill in as thumbnails land.
+        DispatchQueue.global(qos: .userInitiated).async { [weak thumb] in
+            guard let image = Thumbnail.image(url, maxPixels: 176) else { return }
+            DispatchQueue.main.async { if thumb?.url == url { thumb?.image = image } }
+        }
+        if ["mov", "mp4"].contains(url.pathExtension.lowercased()) {
+            Task { @MainActor [weak thumb] in if let frame = await Thumbnail.video(url, maxPixels: 176), thumb?.url == url { thumb?.image = frame } }
+        }
         thumb.doubleClick = {
-            if url.pathExtension == "leanshot" || NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
+            if url.pathExtension.lowercased() == "leanshot" || Thumbnail.isImage(url) { AnnotateWindow.open(url) }
             else { VideoEditor.open(url) }
         }
         thumb.imageScaling = .scaleProportionallyUpOrDown; cell.addSubview(thumb)
@@ -67,17 +103,18 @@ final class HistoryWindow: NSWindow, NSTableViewDataSource, NSTableViewDelegate,
         name.lineBreakMode = .byTruncatingMiddle; cell.addSubview(name)
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         let bytes = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        let detail = NSTextField(labelWithString: "\(url.pathExtension.uppercased()) · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))")
+        let when = (attrs?[.creationDate] as? Date).map { " · " + Self.age.localizedString(for: $0, relativeTo: Date()) } ?? ""
+        let detail = NSTextField(labelWithString: "\(url.pathExtension.uppercased()) · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))\(when)")
         detail.textColor = .secondaryLabelColor; detail.font = .systemFont(ofSize: 12); detail.frame = NSRect(x: 108, y: 12, width: 400, height: 18)
         cell.addSubview(detail); return cell
     }
     private var selected: URL? { files.indices.contains(table.selectedRow) ? files[table.selectedRow] : nil }
     @objc private func openSelected() {
         guard let url = selected else { return }
-        if url.pathExtension == "leanshot" || NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
+        if url.pathExtension.lowercased() == "leanshot" || Thumbnail.isImage(url) { AnnotateWindow.open(url) }
         else { VideoEditor.open(url) }
     }
-    @objc private func copySelected() { if let url = selected { Clipboard.copy(url); Toast.show("Copied") } }
+    @objc private func copySelected() { if let url = selected { Clipboard.copy(url); Toast.show("Copied", symbol: "checkmark.circle.fill") } }
     @objc private func reveal() { if let url = selected { NSWorkspace.shared.activateFileViewerSelecting([url]) } }
     @objc private func trash() {
         guard let url = selected else { return }

@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import AVFoundation
 import ImageIO
 import CoreImage
@@ -59,18 +60,34 @@ final class EditorTests {
         print("Testing rotate / flip"); tests.testRotateRoundTripAndFlip()
         print("Testing undo / redo"); tests.testImageChangesAndInsertionsUndoAndRedo()
         print("Testing editable projects"); try tests.testProjectRoundTripPreservesEditableLayersAndDPI()
-        print("Testing redaction"); tests.testOpaqueRedactionExportsBlackPixels()
+        print("Testing redaction"); tests.testOpaqueRedactionExportsBlackPixels(); tests.testRedactionStylesObscureOnlyTheirRect()
         print("Testing backgrounds"); tests.testBackgroundAspectAndTransparentPadding()
         tests.testCaptureFilenamesNeverCollide()
+        // Browsers and design tools read public.png; TIFF stays for older Cocoa apps.
+        let board = NSPasteboard(name: NSPasteboard.Name("LeanShot-test-\(UUID().uuidString)"))
+        Clipboard.copy(tests.fixture(), to: board)
+        check(board.types?.contains(.png) == true && board.types?.contains(.tiff) == true, "clipboard types: \(board.types ?? [])")
+        check(NSImage(data: board.data(forType: .png) ?? Data())?.size == NSSize(width: 100, height: 60), "lazy PNG must decode at 1x size")
+        board.releaseGlobally()
+        // Save As formats decode back at the same Retina pixel size.
+        let cg = tests.fixture().cgImage(forProposedRect: nil, context: nil, hints: nil)!
+        for type in [UTType.png, .jpeg, .heic] {
+            let data = ImageTools.encode(cg, pointWidth: 100, as: type)
+            checkEqual(data.flatMap { NSBitmapImageRep(data: $0)?.pixelsWide }, 200, "\(type.identifier) round trip")
+        }
+        // One key, one action: shortcut and tool-key tables must not collide.
+        checkEqual(Set(EditorShortcut.allCases.map(\.display)).count, EditorShortcut.allCases.count)
+        checkEqual(Set(Tool.visible.map(\.key)).count, Tool.visible.count)
         try tests.testHistoryFiltersFilesAndPreservesOriginals()
         tests.testScrollingOverlapAndDuplicates()
         try tests.testMotionTimeline()
         tests.testCursorEffects()
         try tests.testOverlayReleasesWindow()
         tests.testOverlappingSpotlights()
-        print("13 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, backgrounds, filenames, history, scrolling, motion tracking, cursor effects, overlay lifecycle, spotlights")
+        tests.testShapesEditableWithAnyTool()
+        print("15 regression tests passed: crop, rotate/flip, undo/redo, projects, redaction, redaction styles, backgrounds, filenames, history, scrolling, motion tracking, cursor effects, overlay lifecycle, spotlights, shape editing")
     }
-    private func fixture() -> NSImage {
+    func fixture() -> NSImage {
         ImageTools.render(size: NSSize(width: 100, height: 60), pixels: NSSize(width: 200, height: 120)) { r in
             NSColor.white.setFill(); r.fill()
             NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 50, height: 60).fill()
@@ -119,8 +136,10 @@ final class EditorTests {
         canvas.marks = [Mark(tool: .text, points: [CGPoint(x: 4, y: 5)], color: .systemPink, width: 4, text: "Campaign", style: 6)]
         canvas.insertImage(fixture())
         let url = Capture.tempURL("leanshot"); defer { try? FileManager.default.removeItem(at: url) }
-        try ShotProject(canvas: canvas).write(url)
+        var background = ShotBackground(); background.customImage = Data([1, 2]); background.blur = 40; background.position = 2
+        try ShotProject(canvas: canvas, background: background).write(url)
         let project = try ShotProject.read(url)
+        checkEqual(project.background, background, "Project lost its background")
         let image = try project.decodedImage()
         checkEqual(ImageTools.pixelSize(image), NSSize(width: 200, height: 120))
         checkEqual(image.size, NSSize(width: 100, height: 60))
@@ -131,6 +150,9 @@ final class EditorTests {
         checkThrows(try unknown.decodedImage())
         var oversized = project; oversized.canvasSize.width = CGFloat.greatestFiniteMagnitude
         checkThrows(try oversized.decodedImage())
+        // Text has 7 styles; a rect may carry the arrow style older builds leaked onto every shape.
+        checkThrows(try JSONDecoder().decode(Mark.self, from: JSONEncoder().encode(Mark(tool: .text, points: [.zero], color: .red, width: 4, text: "a", style: 99))))
+        checkEqual(try! JSONDecoder().decode(Mark.self, from: JSONEncoder().encode(Mark(tool: .rect, points: [.zero, CGPoint(x: 5, y: 5)], color: .red, width: 4, style: 3))).style, 3)
         let invalidMark = Mark(tool: .arrow, points: [], color: .red, width: 4)
         checkThrows(try JSONDecoder().decode(Mark.self, from: JSONEncoder().encode(invalidMark)))
     }
@@ -140,13 +162,29 @@ final class EditorTests {
         let pixel = color(canvas.export(), 40, 80)
         checkLess(pixel.redComponent, 0.01); checkLess(pixel.greenComponent, 0.01); checkEqual(pixel.alphaComponent, 1)
     }
+    /// Every redaction style must change the pixels it covers (red bleeds into white here) and leave the rest alone.
+    func testRedactionStylesObscureOnlyTheirRect() {
+        for style in Tool.redactions.indices {
+            let canvas = Canvas(image: fixture())
+            canvas.marks = [Mark(tool: .pixelate, points: [CGPoint(x: 40, y: 10), CGPoint(x: 60, y: 50)], color: .red, width: 14, style: style)]
+            let out = canvas.export(), original = fixture()
+            let inside = color(out, 110, 60), outside = color(out, 60, 60) // inside starts white, next to the red edge
+            if style == 3 { checkLess(inside.redComponent, 0.01) } else { checkLess(inside.greenComponent, color(original, 110, 60).greenComponent - 0.05) }
+            checkEqual(outside, color(original, 60, 60))
+        }
+    }
     func testBackgroundAspectAndTransparentPadding() {
-        var style = BackgroundStyle(); style.padding = 10; style.aspect = 1; style.palette = 18; style.shadow = false
+        var style = ShotBackground(); style.padding = 10; style.aspect = 1; style.color = [0, 0, 0, 0]; style.shadow = 0
         let result = style.apply(to: fixture())
         checkEqual(result.size, NSSize(width: 120, height: 120))
         checkEqual(ImageTools.pixelSize(result), NSSize(width: 240, height: 240))
         checkLess(color(result, 0, 0).alphaComponent, 0.01)
         checkGreater(color(result, 120, 120).alphaComponent, 0.99)
+        style.inset = 5; style.position = 0 // top left on a square canvas
+        let layout = style.layout(NSSize(width: 100, height: 60))
+        checkEqual(layout.size, NSSize(width: 130, height: 130))
+        checkEqual(layout.card, NSRect(x: 10, y: 50, width: 110, height: 70))
+        checkEqual(layout.shot, NSRect(x: 15, y: 55, width: 100, height: 60))
     }
     func testCaptureFilenamesNeverCollide() {
         checkNotEqual(Capture.newURL("png"), Capture.newURL("png"))
@@ -219,6 +257,34 @@ final class EditorTests {
         let image = canvas.export()
         checkGreater(color(image, 140, 60).greenComponent, 0.9, "Overlapping spotlight interiors were dimmed")
         checkLess(color(image, 190, 60).greenComponent, 0.7)
+    }
+    func testShapesEditableWithAnyTool() {
+        let canvas = Canvas(image: fixture())
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        func drag(_ a: CGPoint, _ b: CGPoint) {
+            canvas.mouseDown(with: mouse(.leftMouseDown, a.x, a.y)); canvas.mouseDragged(with: mouse(.leftMouseDragged, b.x, b.y)); canvas.mouseUp(with: mouse(.leftMouseUp, b.x, b.y))
+        }
+        canvas.tool = .rect
+        drag(CGPoint(x: 10, y: 10), CGPoint(x: 60, y: 50))
+        checkEqual(canvas.selected, 0, "A new shape must be selected for editing")
+        drag(CGPoint(x: 30, y: 25), CGPoint(x: 40, y: 35)) // inside the outline: draws, does not grab
+        checkEqual(canvas.marks.count, 2)
+        canvas.tool = .arrow
+        drag(CGPoint(x: 10, y: 30), CGPoint(x: 15, y: 30)) // on the first rect's stroke: moves it
+        checkEqual(canvas.marks.count, 2); checkEqual(canvas.marks[0].rect.minX, 15)
+        canvas.tool = .select
+        drag(CGPoint(x: 55, y: 20), CGPoint(x: 60, y: 20)) // Select grabs a box by its interior, away from the stroke
+        checkEqual(canvas.marks.count, 2); checkEqual(canvas.marks[0].rect.minX, 20)
+        canvas.marks = [Mark(tool: .arrow, points: [CGPoint(x: 10, y: 10), CGPoint(x: 80, y: 40)], color: .red, width: 4)]
+        canvas.selected = 0
+        drag(CGPoint(x: 80, y: 40), CGPoint(x: 90, y: 20)) // endpoint handle
+        checkEqual(canvas.marks[0].points, [CGPoint(x: 10, y: 10), CGPoint(x: 90, y: 20)])
+        canvas.undo(); checkEqual(canvas.marks[0].points[1], CGPoint(x: 80, y: 40))
+        canvas.selected = 0
+        check(canvas.duplicateSelection()); checkEqual(canvas.marks.count, 2)
+        checkEqual(canvas.marks[1].points[0], CGPoint(x: 22, y: -2)); checkEqual(canvas.selected, 1)
     }
     func testHistoryFiltersFilesAndPreservesOriginals() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

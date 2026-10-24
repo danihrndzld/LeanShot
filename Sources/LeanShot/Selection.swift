@@ -18,6 +18,7 @@ final class RegionSelector: NSWindow {
 
     static func choose(size: CGSize? = nil, aspect: CGFloat = 0, completion: @escaping (ScreenRegion?, NSImage?) -> Void) {
         guard !isSelecting, Capture.current == nil else { NSSound.beep(); return }
+        if #available(macOS 15, *), Recorder.shared.busy { NSSound.beep(); return } // the screen is already being recorded
         isSelecting = true; QuickAccess.hide()
         let pointer = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { isSelecting = false; completion(nil, nil); return }
@@ -38,18 +39,18 @@ final class RegionSelector: NSWindow {
                 w.level = .screenSaver; w.isOpaque = true; w.acceptsMouseMovedEvents = true
                 w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                 let v = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size)); v.image = image
-                if let encoded = Settings.defaults.string(forKey: "lastRegion.\(displayID)") { v.selection = NSRectFromString(encoded) }
+                if let encoded = Settings.defaults.string(forKey: Settings.lastRegionKey(displayID)) { v.selection = NSRectFromString(encoded) }
                 v.aspectRatio = aspect
                 v.fixedSize = size
                 v.finish = { [weak w] rect in
                     let region = rect.map { ScreenRegion(screen: screen, rect: $0) }
                     let shot = rect.map { ImageTools.crop(image, to: $0) }
-                    if let rect { Settings.defaults.set(NSStringFromRect(rect), forKey: "lastRegion.\(displayID)") }
+                    if let rect { Settings.defaults.set(NSStringFromRect(rect), forKey: Settings.lastRegionKey(displayID)) }
                     w?.orderOut(nil); current = nil; isSelecting = false; QuickAccess.resume(); completion(region, shot)
                 }
                 w.contentView = v; current = w
                 NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
-            } catch { isSelecting = false; QuickAccess.resume(); NSAlert(error: error).runModal(); completion(nil, nil) }
+            } catch { isSelecting = false; QuickAccess.resume(); Permissions.explain(error); completion(nil, nil) }
         }
     }
     override var canBecomeKey: Bool { true }
@@ -122,8 +123,12 @@ private final class SelectionView: NSView {
         NSColor.black.withAlphaComponent(0.8).setFill(); NSBezierPath(roundedRect: box, xRadius: 12, yRadius: 12).fill()
         (message as NSString).draw(at: CGPoint(x: box.minX + 16, y: box.minY + 12), withAttributes: attrs)
         if selection.width > 0 {
-            let size = "\(Int(selection.width)) × \(Int(selection.height)) pt"
-            (size as NSString).draw(at: CGPoint(x: selection.minX + 8, y: max(80, selection.minY - 24)), withAttributes: attrs)
+            let size = "\(Int(selection.width)) × \(Int(selection.height))" as NSString
+            let pillAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.white]
+            let text = size.size(withAttributes: pillAttrs)
+            let pill = NSRect(x: min(selection.minX, bounds.width - text.width - 20), y: max(80, selection.minY - 30), width: text.width + 20, height: 24)
+            NSColor.black.withAlphaComponent(0.75).setFill(); NSBezierPath(roundedRect: pill, xRadius: 12, yRadius: 12).fill()
+            size.draw(at: CGPoint(x: pill.minX + 10, y: pill.minY + (24 - text.height) / 2), withAttributes: pillAttrs)
         }
         if magnifier, let image {
             let lens = NSRect(x: min(bounds.width - 132, pointer.x + 24), y: min(bounds.height - 132, max(90, pointer.y - 144)), width: 112, height: 112)

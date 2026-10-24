@@ -3,8 +3,23 @@ import ServiceManagement
 
 enum Settings {
     static let defaults = UserDefaults.standard
+    // Every UserDefaults key lives here; interpolated keys go through these builders so a typo cannot reset a value.
+    enum HotkeyPart: String { case code, modifiers, key }
+    static func hotkeyKey(_ defaultCode: UInt32, _ part: HotkeyPart) -> String { "hotkey.\(defaultCode).\(part.rawValue)" }
+    static func lastRegionKey(_ displayID: UInt32) -> String { "lastRegion.\(displayID)" }
+    /// Last-used editor choices, restored in every new editor window.
+    static var editorChoices: [String: Double] {
+        get { defaults.dictionary(forKey: "editorChoices") as? [String: Double] ?? [:] } set { defaults.set(newValue, forKey: "editorChoices") }
+    }
+    /// Index into AnnotateWindow's Save As formats (PNG, JPEG, HEIC); remembered between saves.
+    static var exportFormat: Int { get { defaults.integer(forKey: "exportFormat") } set { defaults.set(newValue, forKey: "exportFormat") } }
+    static var focusStart: String { get { defaults.string(forKey: "focusStart") ?? "" } set { defaults.set(newValue, forKey: "focusStart") } }
+    static var focusEnd: String { get { defaults.string(forKey: "focusEnd") ?? "" } set { defaults.set(newValue, forKey: "focusEnd") } }
+    /// Pre-0.3 background storage, read once to migrate into Application Support files.
+    static var backgroundPreset: Data? { get { defaults.data(forKey: "backgroundPreset") } set { defaults.set(newValue, forKey: "backgroundPreset") } }
+    static var backgroundPresets: Data? { get { defaults.data(forKey: "backgroundPresets") } set { defaults.set(newValue, forKey: "backgroundPresets") } }
     static var corner: Int { get { defaults.integer(forKey: "overlayCorner") } set { defaults.set(newValue, forKey: "overlayCorner") } }
-    static var overlayWidth: CGFloat { get { let v = defaults.double(forKey: "overlayWidth"); return v > 0 ? v : 280 } set { defaults.set(newValue, forKey: "overlayWidth") } }
+    static var overlayWidth: CGFloat { get { let v = defaults.double(forKey: "overlayWidth"); return v > 0 ? v : 180 } set { defaults.set(newValue, forKey: "overlayWidth") } }
     static var autoClose: Double { get { defaults.double(forKey: "overlayAutoClose") } set { defaults.set(newValue, forKey: "overlayAutoClose") } }
     static var copyOnCapture: Bool { get { defaults.object(forKey: "copyOnCapture") as? Bool ?? true } set { defaults.set(newValue, forKey: "copyOnCapture") } }
     static var windowShadow: Bool { get { defaults.object(forKey: "windowShadow") as? Bool ?? true } set { defaults.set(newValue, forKey: "windowShadow") } }
@@ -39,75 +54,215 @@ enum Settings {
     }
 }
 
-final class SettingsWindow: NSWindow {
+final class SettingsWindow: NSWindow, NSWindowDelegate {
     private static var instance: SettingsWindow?
-    static func show() {
-        if let w = instance { NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil); return }
-        let w = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "LeanShot Settings"
-        w.isReleasedWhenClosed = false
-        let stack = NSStackView()
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
-        stack.frame = NSRect(x: 28, y: 24, width: 424, height: 508)
-        func toggle(_ title: String, _ value: Bool, _ change: @escaping (Bool) -> Void) {
-            let b = ClosureButton(frame: .zero) {}
-            b.setButtonType(.switch); b.title = title; b.state = value ? .on : .off
-            b.setHandler { [weak b] in change(b?.state == .on) }
-            stack.addArrangedSubview(b)
-        }
-        func popup(_ title: String, _ choices: [String], _ selected: Int, _ change: @escaping (Int) -> Void) {
-            let row = NSStackView(); row.spacing = 12
-            row.addArrangedSubview(NSTextField(labelWithString: title))
-            let p = ClosurePopup(choices: choices, selected: selected, change: change)
-            row.addArrangedSubview(p); stack.addArrangedSubview(row)
-        }
-        toggle("Copy captures to clipboard", Settings.copyOnCapture) { Settings.copyOnCapture = $0 }
-        toggle("Include window shadows", Settings.windowShadow) { Settings.windowShadow = $0 }
-        toggle("Include pointer in screenshots / recordings", Settings.captureCursor) { Settings.captureCursor = $0 }
-        popup("Overlay position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.corner) { Settings.corner = $0 }
-        popup("Thumbnail size", ["Small", "Medium", "Large"], [220, 280, 340].firstIndex(of: Int(Settings.overlayWidth)) ?? 1) { Settings.overlayWidth = CGFloat([220, 280, 340][$0]) }
-        popup("Close overlays", ["Manually", "After 10 seconds", "After 30 seconds", "After 60 seconds"], [0.0, 10, 30, 60].firstIndex(of: Settings.autoClose) ?? 0) { Settings.autoClose = [0, 10, 30, 60][$0] }
-        popup("Recording frame rate", ["30 fps", "60 fps"], Settings.recordingFPS == 60 ? 1 : 0) { Settings.recordingFPS = $0 == 1 ? 60 : 30 }
-        popup("Recording resolution limit", ["1280 px", "1920 px", "3840 px (4K)"], [1280, 1920, 3840].firstIndex(of: Settings.recordingResolution) ?? 2) { Settings.recordingResolution = [1280, 1920, 3840][$0] }
-        toggle("Record computer audio", Settings.recordingAudio) { Settings.recordingAudio = $0 }
-        toggle("Record microphone (macOS 15+)", Settings.recordingMicrophone) { Settings.recordingMicrophone = $0 }
-        toggle("Show clicks in recordings (macOS 15+)", Settings.recordClicks) { Settings.recordClicks = $0 }
-        popup("Click color (display / area)", ["Pink", "Blue", "Green", "Yellow", "White"], Settings.clickColor) { Settings.clickColor = $0 }
-        popup("Click size", ["Small", "Medium", "Large"], [24, 40, 64].firstIndex(of: Int(Settings.clickSize)) ?? 1) { Settings.clickSize = CGFloat([24, 40, 64][$0]) }
-        toggle("Filled click circles", Settings.clickFilled) { Settings.clickFilled = $0 }
-        toggle("Animate click circles", Settings.clickAnimated) { Settings.clickAnimated = $0 }
-        toggle("Record camera (display / area, macOS 15+)", Settings.recordCamera) { Settings.recordCamera = $0 }
-        popup("Camera position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.cameraCorner) { Settings.cameraCorner = $0 }
-        popup("Camera size", ["Small", "Medium", "Large"], [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }
-        toggle("Circular camera frame", Settings.cameraCircle) { Settings.cameraCircle = $0 }
-        toggle("Fullscreen camera", Settings.cameraFullscreen) { Settings.cameraFullscreen = $0 }
-        toggle("Show keystrokes (display / area, Accessibility)", Settings.recordKeystrokes) { Settings.recordKeystrokes = $0 }
-        toggle("Show only shortcuts with ⌘ / ⌃ / ⌥", Settings.commandKeysOnly) { Settings.commandKeysOnly = $0 }
-        toggle("Light keystroke style", Settings.keysLight) { Settings.keysLight = $0 }
-        popup("Keystroke position", ["Bottom left", "Bottom right", "Top left", "Top right"], Settings.keysCorner) { Settings.keysCorner = $0 }
-        popup("Keystroke size", ["Small", "Medium", "Large"], [17, 23, 30].firstIndex(of: Int(Settings.keysSize)) ?? 1) { Settings.keysSize = CGFloat([17, 23, 30][$0]) }
-        toggle("Hide desktop icons while recording", Settings.hideDesktop) { Settings.hideDesktop = $0 }
-        toggle("Use Focus shortcuts while recording", Settings.focusEnabled) { Settings.focusEnabled = $0 }
-        let focus = ClosureButton(frame: .zero) { FocusAutomation.configure() }
-        focus.title = "Configure Focus Shortcuts…"; focus.bezelStyle = .rounded; stack.addArrangedSubview(focus)
-        toggle("Launch at login", SMAppService.mainApp.status == .enabled) { enabled in
-            do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
-            catch { NSAlert(error: error).runModal() }
-        }
-        let folder = ClosureButton(frame: .zero) {
-            let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
-            if p.runModal() == .OK, let url = p.url { Settings.saveFolder = url }
-        }
-        folder.title = "Choose Captures Folder…"; folder.bezelStyle = .rounded; stack.addArrangedSubview(folder)
-        let height = max(508, stack.fittingSize.height)
-        stack.frame = NSRect(x: 28, y: 24, width: 424, height: height)
-        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: height + 48)); doc.addSubview(stack)
-        let scroll = NSScrollView(frame: w.contentView!.bounds); scroll.documentView = doc; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.frame.height - scroll.contentSize.height)))
-        w.contentView?.addSubview(scroll)
-        w.center(); instance = w
+    static let width: CGFloat = 560
+    private let tabs = SettingsTabs()
+    /// Tabs: 0 General, 1 Quick Access, 2 Screenshots, 3 Recording, 4 Shortcuts, 5 About. nil keeps the last tab.
+    static func show(tab: Int? = nil) {
+        let w = instance ?? SettingsWindow(); instance = w
+        if let tab { w.tabs.selectedTabViewItemIndex = tab }
+        if !w.isVisible { w.center() }
         NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
     }
+    static func preview(tab: Int, to output: URL) {
+        show(tab: tab); instance?.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard let w = instance else { exit(1) }
+            // Real capture when Screen Recording allows it; otherwise the view's own rendering.
+            let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            task.arguments = ["-x", "-o", "-l\(w.windowNumber)", output.path]
+            try? task.run(); task.waitUntilExit()
+            if task.terminationStatus != 0, let view = w.contentView?.superview, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: output)
+            }
+            exit(0)
+        }
+    }
+    private init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        isReleasedWhenClosed = false; delegate = self; toolbarStyle = .preference
+        tabs.tabStyle = .toolbar
+        let panes: [(String, String, NSView)] = [("General", "gearshape", Self.general()), ("Quick Access", "rectangle.on.rectangle", Self.quickAccess()),
+            ("Screenshots", "camera", Self.screenshots()), ("Recording", "video", Self.recording()), ("Shortcuts", "command", ShortcutSettings.pane()), ("About", "info.circle", Self.about())]
+        for (title, symbol, view) in panes {
+            let vc = NSViewController(); vc.view = view; vc.title = title; vc.preferredContentSize = view.frame.size
+            let item = NSTabViewItem(viewController: vc); item.label = title
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+            tabs.addTabViewItem(item)
+        }
+        contentViewController = tabs
+    }
+    func windowWillClose(_ notification: Notification) { ShortcutSettings.stopRecording() }
+
+    private static func general() -> NSView {
+        let folder = ClosureButton(frame: .zero) {}
+        func showFolder() {
+            folder.title = Settings.saveFolder.lastPathComponent; folder.toolTip = Settings.saveFolder.path
+            let icon = NSWorkspace.shared.icon(forFile: Settings.saveFolder.path); icon.size = NSSize(width: 16, height: 16)
+            folder.image = icon; folder.imagePosition = .imageLeading
+        }
+        folder.bezelStyle = .push; showFolder()
+        folder.setHandler {
+            let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true; p.directoryURL = Settings.saveFolder
+            if p.runModal() == .OK, let url = p.url { Settings.saveFolder = url; showFolder() }
+        }
+        let focus = ClosureButton(frame: .zero) { FocusAutomation.configure() }
+        focus.title = "Configure…"; focus.bezelStyle = .push
+        return pane([
+            section("General", [
+                row("Copy captures to clipboard", toggle(Settings.copyOnCapture) { Settings.copyOnCapture = $0 }),
+                row("Launch at login", toggle(SMAppService.mainApp.status == .enabled) { enabled in
+                    do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
+                    catch { NSAlert(error: error).runModal() }
+                }),
+                row("Captures folder", folder),
+            ]),
+            section("Focus", [
+                row("Use Focus shortcuts while recording", toggle(Settings.focusEnabled) { Settings.focusEnabled = $0 }),
+                row("Focus shortcuts", "Shortcuts that turn Focus on and off around a recording", focus),
+            ]),
+        ])
+    }
+
+    private static func quickAccess() -> NSView {
+        pane([section("Overlay", [
+            row("Position", ClosurePopup(choices: ["Bottom left", "Bottom right", "Top left", "Top right"], selected: Settings.corner) { Settings.corner = $0 }),
+            row("Thumbnail size", ClosurePopup(choices: ["Small", "Medium", "Large"], selected: [150, 180, 230].firstIndex(of: Int(Settings.overlayWidth)) ?? 1) { Settings.overlayWidth = CGFloat([150, 180, 230][$0]) }),
+            row("Close overlays", ClosurePopup(choices: ["Manually", "After 10 seconds", "After 30 seconds", "After 60 seconds"], selected: [0.0, 10, 30, 60].firstIndex(of: Settings.autoClose) ?? 0) { Settings.autoClose = [0, 10, 30, 60][$0] }),
+        ])])
+    }
+
+    private static func screenshots() -> NSView {
+        pane([section("Capture", [
+            row("Include window shadows", toggle(Settings.windowShadow) { Settings.windowShadow = $0 }),
+            row("Include pointer", "Also applies to recordings", toggle(Settings.captureCursor) { Settings.captureCursor = $0 }),
+        ])])
+    }
+
+    private static func recording() -> NSView {
+        let corners = ["Bottom left", "Bottom right", "Top left", "Top right"], sizes = ["Small", "Medium", "Large"]
+        return pane([
+            section("Video", [
+                row("Frame rate", ClosurePopup(choices: ["30 fps", "60 fps"], selected: Settings.recordingFPS == 60 ? 1 : 0) { Settings.recordingFPS = $0 == 1 ? 60 : 30 }),
+                row("Resolution limit", ClosurePopup(choices: ["1280 px", "1920 px", "3840 px (4K)"], selected: [1280, 1920, 3840].firstIndex(of: Settings.recordingResolution) ?? 2) { Settings.recordingResolution = [1280, 1920, 3840][$0] }),
+                row("Hide desktop icons while recording", toggle(Settings.hideDesktop) { Settings.hideDesktop = $0 }),
+            ]),
+            section("Audio", [
+                row("Record computer audio", toggle(Settings.recordingAudio) { Settings.recordingAudio = $0 }),
+                row("Record microphone", "macOS 15 or later", toggle(Settings.recordingMicrophone) { Settings.recordingMicrophone = $0 }),
+            ]),
+            section("Clicks", [
+                row("Show clicks", "macOS 15 or later", toggle(Settings.recordClicks) { Settings.recordClicks = $0 }),
+                row("Color", "Display and area recordings", ClosurePopup(choices: ["Pink", "Blue", "Green", "Yellow", "White"], selected: Settings.clickColor) { Settings.clickColor = $0 }),
+                row("Size", ClosurePopup(choices: sizes, selected: [24, 40, 64].firstIndex(of: Int(Settings.clickSize)) ?? 1) { Settings.clickSize = CGFloat([24, 40, 64][$0]) }),
+                row("Filled circles", toggle(Settings.clickFilled) { Settings.clickFilled = $0 }),
+                row("Animate circles", toggle(Settings.clickAnimated) { Settings.clickAnimated = $0 }),
+            ]),
+            section("Camera", [
+                row("Record camera", "Display and area recordings, macOS 15 or later", toggle(Settings.recordCamera) { Settings.recordCamera = $0 }),
+                row("Position", ClosurePopup(choices: corners, selected: Settings.cameraCorner) { Settings.cameraCorner = $0 }),
+                row("Size", ClosurePopup(choices: sizes, selected: [140, 180, 240].firstIndex(of: Int(Settings.cameraSize)) ?? 1) { Settings.cameraSize = CGFloat([140, 180, 240][$0]) }),
+                row("Circular frame", toggle(Settings.cameraCircle) { Settings.cameraCircle = $0 }),
+                row("Fullscreen camera", toggle(Settings.cameraFullscreen) { Settings.cameraFullscreen = $0 }),
+            ]),
+            section("Keystrokes", [
+                row("Show keystrokes", "Display and area recordings, requires Accessibility", toggle(Settings.recordKeystrokes) { Settings.recordKeystrokes = $0 }),
+                row("Only shortcuts with ⌘, ⌃ or ⌥", toggle(Settings.commandKeysOnly) { Settings.commandKeysOnly = $0 }),
+                row("Light style", toggle(Settings.keysLight) { Settings.keysLight = $0 }),
+                row("Position", ClosurePopup(choices: corners, selected: Settings.keysCorner) { Settings.keysCorner = $0 }),
+                row("Size", ClosurePopup(choices: sizes, selected: [17, 23, 30].firstIndex(of: Int(Settings.keysSize)) ?? 1) { Settings.keysSize = CGFloat([17, 23, 30][$0]) }),
+            ]),
+        ])
+    }
+
+    private static func about() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.widthAnchor.constraint(equalToConstant: 96).isActive = true; icon.heightAnchor.constraint(equalToConstant: 96).isActive = true
+        let name = NSTextField(labelWithString: "LeanShot"); name.font = .systemFont(ofSize: 20, weight: .semibold)
+        let version = NSTextField(labelWithString: "Version " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"))
+        version.textColor = .secondaryLabelColor
+        let blurb = NSTextField(labelWithString: "Native capture and annotation for macOS"); blurb.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [icon, name, version, blurb]); stack.orientation = .vertical; stack.spacing = 6
+        stack.setCustomSpacing(12, after: icon); stack.edgeInsets = NSEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
+        stack.widthAnchor.constraint(equalToConstant: width - 40).isActive = true
+        return pane([stack])
+    }
+
+    // System Settings–style building blocks, shared with ShortcutSettings.
+    static func pane(_ sections: [NSView]) -> NSView {
+        let stack = NSStackView(views: sections); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 20
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 24, right: 20)
+        stack.frame.size = NSSize(width: width, height: stack.fittingSize.height)
+        let doc = FlippedView(frame: stack.frame); doc.addSubview(stack)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: min(stack.frame.height, 640)))
+        scroll.documentView = doc; scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        if stack.frame.height <= 640 { scroll.verticalScrollElasticity = .none }
+        return scroll
+    }
+    static func section(_ title: String, _ rows: [NSView], footer: String? = nil) -> NSView {
+        let list = NSStackView(); list.orientation = .vertical; list.spacing = 0; list.translatesAutoresizingMaskIntoConstraints = false
+        for (i, row) in rows.enumerated() {
+            if i > 0 {
+                let line = NSBox(); line.boxType = .separator; list.addArrangedSubview(line)
+                line.widthAnchor.constraint(equalToConstant: width - 64).isActive = true
+            }
+            list.addArrangedSubview(row)
+        }
+        let box = NSBox(); box.boxType = .custom; box.titlePosition = .noTitle; box.contentViewMargins = .zero
+        box.cornerRadius = 10; box.borderWidth = 1; box.borderColor = .separatorColor; box.fillColor = .quinarySystemFill
+        box.contentView?.addSubview(list)
+        if let content = box.contentView {
+            NSLayoutConstraint.activate([list.topAnchor.constraint(equalTo: content.topAnchor, constant: 2), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -2),
+                                         list.leadingAnchor.constraint(equalTo: content.leadingAnchor), list.trailingAnchor.constraint(equalTo: content.trailingAnchor)])
+        }
+        let header = NSTextField(labelWithString: title); header.font = .boldSystemFont(ofSize: 13)
+        let headerRow = NSStackView(views: [header]); headerRow.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 0)
+        let stack = NSStackView(views: [headerRow, box]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
+        if let footer {
+            let note = NSTextField(wrappingLabelWithString: footer); note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
+            note.preferredMaxLayoutWidth = width - 56
+            let noteRow = NSStackView(views: [note]); noteRow.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8); stack.addArrangedSubview(noteRow)
+        }
+        return stack
+    }
+    static func row(_ title: String, _ control: NSView) -> NSView { row(title, nil, control) }
+    static func row(_ title: String, _ detail: String?, _ control: NSView) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
+        if let detail {
+            let sub = NSTextField(labelWithString: detail); sub.font = .systemFont(ofSize: 11); sub.textColor = .secondaryLabelColor
+            text.addArrangedSubview(sub)
+        }
+        let row = NSStackView(); row.orientation = .horizontal
+        row.addView(text, in: .leading); row.addView(control, in: .trailing)
+        row.edgeInsets = NSEdgeInsets(top: 7, left: 12, bottom: 7, right: 12)
+        row.widthAnchor.constraint(equalToConstant: width - 40).isActive = true
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        return row
+    }
+    static func toggle(_ on: Bool, _ change: @escaping (Bool) -> Void) -> NSView {
+        let s = ClosureSwitch(); s.controlSize = .small; s.state = on ? .on : .off; s.change = change
+        return s
+    }
+}
+
+private final class SettingsTabs: NSTabViewController {
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem); view.window?.title = tabViewItem?.label ?? ""
+    }
+    override func viewDidAppear() { super.viewDidAppear(); view.window?.title = tabViewItems[selectedTabViewItemIndex].label }
+}
+
+private final class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+private final class ClosureSwitch: NSSwitch {
+    var change: (Bool) -> Void = { _ in }
+    override init(frame: NSRect) { super.init(frame: frame); target = self; action = #selector(changed) }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func changed() { change(state == .on) }
 }
 
 final class ClosurePopup: NSPopUpButton {

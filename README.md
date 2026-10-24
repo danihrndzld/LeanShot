@@ -1,116 +1,132 @@
-# LeanShot
+<p align="center"><img src="docs/images/icon.png" width="128" alt="LeanShot app icon"></p>
 
-A native macOS menu-bar capture and annotation app inspired by [CleanShot X](https://cleanshot.com/features). Swift and AppKit, no third-party dependencies, builds with Command Line Tools.
+<h1 align="center">LeanShot</h1>
 
-## Build
+<p align="center">A native macOS app for screenshots, annotation and screen recording, inspired by CleanShot X.</p>
 
-Requires macOS 14+. Display, area and window recording with audio require macOS 15+.
+![The LeanShot editor with the background sidebar open](docs/images/editor.png)
+
+LeanShot lives in the menu bar and captures an area, a window, the full screen or a scrolling page. After each capture, a small card appears in the corner of the screen, so you can copy, save, drag or annotate the image right away. The app is written in Swift with AppKit, it has no third-party dependencies, and it builds with the Command Line Tools.
+
+## Install
+
+Download `LeanShot-0.3.0.dmg` from the [latest release](https://github.com/danihrndzld/LeanShot/releases/latest), open it, and drag LeanShot to Applications.
+
+The app is signed with an Apple Development certificate, but it is not notarized, so macOS blocks the first launch. To open it, right-click LeanShot in Applications and choose Open, then confirm. If macOS still refuses, run the following command once:
 
 ```sh
+xattr -dr com.apple.quarantine /Applications/LeanShot.app
+```
+
+LeanShot needs Screen Recording permission to capture anything. When the permission is missing, the app shows a button that opens the right pane in System Settings. Microphone and camera permissions are only needed for recordings that use them, and Accessibility is only needed for automatic scrolling capture and the keystroke overlay.
+
+LeanShot requires macOS 14 or later. Screen recording with audio requires macOS 15 or later, and the Liquid Glass design appears on macOS 26 or later.
+
+## Capture
+
+You start a capture from the menu bar icon or with a global shortcut. macOS reserves `⌘⇧3`, `⌘⇧4` and `⌘⇧5`, so LeanShot uses `⌃⇧` instead.
+
+| Shortcut | Action |
+|---|---|
+| `⌃⇧4` | Capture an area |
+| `⌃⇧5` | Capture a window |
+| `⌃⇧3` | Capture the full screen |
+| `⌃⇧2` | Recognize text or a QR code, on device |
+| `⌃⇧6` | Start or stop a screen recording |
+| `⌃⇧1` | Open the All-in-One picker |
+
+You can change these shortcuts in Settings, and you can add a shortcut to any other menu action, e.g., scrolling capture, the self-timer, Pin Last Capture or Capture History.
+
+The menu also has these capture modes:
+
+- Frozen area capture freezes the screen first, so menus and hover states stay visible while you select. It can also capture an exact width and height.
+- Scrolling capture stitches a long page from several frames. You scroll and press Return to add each frame, or you start automatic scrolling with A, and you finish with `⌘Return`.
+- The self-timer lets you select an area first. A countdown from 5 to 1 then appears, and the countdown is never part of the image.
+
+## Quick Access cards
+
+After a capture, LeanShot shows a card in the corner of the screen where you work. When you hover over the card, the image blurs and shows Copy, Save, Pin, Annotate and Share, so the buttons are readable on any screenshot. You can drag the card into another app, and you can dismiss it with a two-finger swipe to the left or right.
+
+Copy puts both PNG and TIFF on the clipboard. Browser apps such as Figma, Notion and Linear read the PNG, and older Mac apps read the TIFF.
+
+## Annotate
+
+Double-click a card, or choose Annotate Last Capture, to open the editor. The toolbar has these tools, each with a single-key shortcut:
+
+| Key | Tool |
+|---|---|
+| `V` `R` `F` `E` | Select, rectangle, filled rectangle, ellipse |
+| `L` `A` `T` `D` | Line, arrow, text, pen |
+| `X` `U` `P` | Blur and redact, Gaussian blur, black bar |
+| `M` `C` `H` `K` | Highlighter, numbered counter, spotlight, crop |
+
+Every new shape stays selected, so you can move it or drag its blue handles right away. Double-click a text annotation to edit it. The editor remembers your last tool, color, stroke width and styles for the next capture.
+
+The blur and redact tool has four styles. Pixelate and Gaussian Blur hide content visually, and a slider sets the pixel size or the blur radius. Secure Blur pixelates the area twice on different grids with a blur in between, so the original text can't be rebuilt from the block averages. Black Bar replaces the pixels completely, and you should use it for passwords and other secrets.
+
+The Background button, or the B key, opens a sidebar for presentation backgrounds. It offers 20 gradients, your desktop picture, your own wallpapers, plain colors and a transparent background, and sliders set the padding, inset, shadow and corner radius. You can save a background as a named preset.
+
+Done saves the annotated image as PNG and copies it to the clipboard. When the capture already lives in your captures folder, Done replaces it and moves the original to the Trash, so you can still recover it. Save As exports PNG, JPEG or HEIC. Save Editable Project writes a `.leanshot` file that keeps the original image and every annotation layer. If you close or quit with unsaved annotations, LeanShot asks whether to save or discard them.
+
+These are the main editor shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `⌘S` or Return | Done |
+| `⌘⇧S` | Save As |
+| `⌘Z` and `⌘⇧Z` | Undo and redo |
+| `⌘C`, `⌘V` and `⌘D` | Copy, paste and duplicate the selected shape |
+| `⌘⇧C` | Copy the whole screenshot |
+| `⌘⇧P` | Pin the screenshot above other windows |
+| `[` and `]` | Decrease and increase the tool size |
+
+Settings lists every shortcut, including the zoom keys and the arrow keys for nudging.
+
+## Pin, history and recording
+
+A pinned screenshot floats above other windows. You can move it, resize it with the scroll wheel, lower its opacity, or make it ignore clicks. Its menu can also copy it, save it or open it in the editor.
+
+Capture History lists every file in your captures folder with a thumbnail, its size and its age. You can search by name with `⌘F`, preview with Space, open with Return, copy with `⌘C`, and move a file to the Trash with `⌘⌫`.
+
+On macOS 15 or later, LeanShot records the display, a selected area or a window as an H.264 MP4 file at 30 or 60 fps. The window picker is the standard macOS picker. Recordings can include system audio, the microphone, a camera bubble, highlighted clicks and the keys you press. The video editor trims the recording, changes its speed and aspect ratio, adds zooms that follow the cursor, and exports MP4 or GIF.
+
+## Build from source
+
+You need the Xcode Command Line Tools on macOS 14 or later.
+
+```sh
+git clone https://github.com/danihrndzld/LeanShot.git
+cd LeanShot
 ./build.sh
 open build/LeanShot.app
 ```
 
-Enable LeanShot in **System Settings → Privacy & Security → Screen Recording**. Microphone recording also requires Microphone permission. Ad-hoc builds can invalidate the screen-recording grant; use a stable signing identity to preserve it:
+`build.sh` signs the app ad hoc by default. Ad hoc signatures change on every build, so macOS asks for Screen Recording permission again after each rebuild. To keep the permission, set `SIGN_ID` to a stable signing identity:
 
 ```sh
 SIGN_ID="Apple Development: you@example.com" ./build.sh
 ```
 
-## Capture and Quick Access
+SwiftPM records SDK 14.0 in the binary, and AppKit then draws the app without Liquid Glass. `build.sh` uses `vtool` to record the real SDK version, so run the app from `build/LeanShot.app` to see the native design.
 
-- Native area, window and fullscreen screenshots; five-second timer; optional window shadow and cursor.
-- Frozen region picker with crosshair, magnifier, Shift for square selections and Return to reuse the last selection on that display. The picker opens on the display under your pointer.
-- All-in-One launcher for capture, OCR, scrolling and recording modes, with optional exact width/height for frozen-area capture.
-- Vertical and horizontal scrolling capture: select the scrolling content, scroll a little, pause and click **Add Frame**. LeanShot detects overlap; **Finish** saves the stitched PNG. Exclude fixed headers from your selection. A frame without a match stays uncommitted so you can scroll back and retry.
-- **Auto / Stop** scrolls and captures automatically (requires Accessibility permission). It stops at unchanged content or a missing overlap; the result is saved only when you click Finish.
-- Quick Access keeps up to four draggable thumbnails stacked at a configurable corner. Hover for Copy, Save, Pin, Annotate and Share. Right-click for rotation, OCR/QR, Quick Look, Finder, hide, close and trash.
-- Overlays hide during capture and return afterward. Use **Restore Quick Access** to reveal hidden cards or restore the most recently closed card. Auto-close waits while a card is hovered, dragged or showing a menu.
-- Capture History searches filenames, filters images, videos and projects, and supports opening, copying, dragging, revealing and trashing files. Captures remain in your configured folder until you delete them.
+Other scripts in the repository:
 
-## Annotate
+- `scripts/make_dmg.sh` builds a signed app and packs it in a signed DMG.
+- `scripts/make_icon.sh` compiles the Icon Composer document `Resources/LeanShot.icon` with Xcode's `actool`. You only need it after editing the icon, and it requires Xcode 26 or later.
 
-The toolbar offers selection, outlined and filled rectangles, ellipse, line, arrow, text, pixelate, highlighter, counters, smoothed pen, blur, spotlight, crop and opaque redaction. Use the color picker and its native eyedropper/swatches for custom colors.
+## Tests and benchmarks
 
-Selecting Highlighter starts on-device text detection. When text bounds are ready, highlight height snaps to the intersected text lines.
-
-The **Image & Styles** menu adds:
-
-- Four arrow styles, including curved and double-headed arrows; seven text styles.
-- Free, square, 16:9, 4:3 and 9:16 crop ratios.
-- Rotation, flipping, proportional pixel resize, undo and redo.
-- Background palettes or a custom image, padding, corner radius, shadow, aspect ratio and left/center/right alignment. Save multiple named presets and recall the last setup.
-- Editable `.leanshot` projects that preserve the source bitmap and annotation layers.
-
-Drop images into the canvas or paste with `⌘V` to combine screenshots. Select layers to move them, drag their corner handles to resize, and press Delete to remove them. Image layers retain their aspect ratio. Exports preserve Retina pixel density.
-
-**Done** saves and copies the PNG. For imported images it creates a new capture, preserving the original. **Save as…** exports to a chosen file; **Save Editable Project…** preserves layers. Project files retain source images; use PNG export to share a flattened redaction. Blur and pixelation are visual effects; use **Redact (Opaque)** to conceal information in the exported PNG.
-
-The bottom bar offers zoom, **Drag Me**, native sharing, pin and copy. Pinned images float over other apps: drag to move, scroll to resize, use arrow keys for precise positioning (Shift for 10 points), and right-click for opacity or click-through lock. **Unlock Floating Screenshots** in the menu restores mouse interaction. Escape or double-click closes a pin.
-
-## Recording and video editing
-
-On macOS 15+, record the display under the pointer, a frozen selected area, or a chosen window using ScreenCaptureKit. Output is H.264 MP4, up to 4K, at 30 or 60 fps. Settings control cursor, computer audio and microphone. The menu bar displays elapsed time; `⌃⇧6` stops and finalizes the file. On macOS 14, the same shortcut uses the original fullscreen MOV recorder.
-
-Optional display/area recording overlays include a camera bubble (size, corner, circle/rounded shape or fullscreen) and keystrokes (all keys or only shortcuts, position, size and light/dark style). Camera permission is required for the bubble; Accessibility permission is required for keystrokes. These overlay windows are included explicitly while LeanShot's other windows stay excluded. Window-only recording does not include the camera or key overlays. Native click highlighting can be enabled for any macOS 15+ recording. The desktop-icon option covers icons with your wallpaper during display/area recordings and removes the cover when recording ends.
-
-Double-click a recording in Quick Access or History to open the native video editor:
-
-- Play and scrub with native playback controls.
-- Set start/end times, speed and audio mute.
-- Export original, landscape, square or portrait composition with background color and padding.
-- Export MP4 or a looping GIF (10 fps, up to 1280 px).
-- Generate cursor-following zooms around clicks, with smooth tracking and motion blur. New display/area recordings save local cursor/click timing in a hidden `.leanshot-motion` folder next to the video; keep this data beside the original to retain these editing options.
-- Replace, resize and smooth the cursor in recordings made with the pointer disabled. Choose a white arrow, black arrow or accent dot. Recordings with the pointer already embedded keep the original cursor. Effects apply during export.
-- Exports use a temporary file and replace the destination only after successful encoding. The original recording stays intact.
-
-## Shortcuts
-
-macOS owns `⌘⇧3/4/5`, so LeanShot uses `⌃⇧`.
-
-| Global | Action |
-|---|---|
-| `⌃⇧1` | All-in-One |
-| `⌃⇧4` | Area |
-| `⌃⇧5` | Window |
-| `⌃⇧3` | Fullscreen |
-| `⌃⇧2` | Text and QR recognition, on device |
-| `⌃⇧6` | Start/stop display recording |
-
-| Editor | Action |
-|---|---|
-| `V R F O L A T B H N P U S C X` | Select a tool in toolbar order |
-| `⌘Z` / `⌘⇧Z` | Undo / redo |
-| `⌘C` / `⌘V` | Copy output / insert clipboard image |
-| `⌘S` / Return | Done |
-| `⌘=` / `⌘-` / `⌘0` | Zoom in / out / 100% |
-
-After installing the app, `leanshot://area`, `window`, `fullscreen`, `text`, `record`, `all-in-one`, `history` and `restore` trigger the corresponding actions. Open `.leanshot` documents with LeanShot to resume editing.
-
-## Settings
-
-Choose capture folder, clipboard behavior, cursor, window shadows, overlay corner, thumbnail size, auto-close duration, recording fps/audio and launch at login. Login registration requires running the built app bundle.
-
-Use **Keyboard Shortcuts…** to record new global combinations. Changes persist, update the menu, and reject combinations already assigned to another action or app.
-
-Display/area click effects offer color, size, filled/outline style and animation controls; window-only recording uses the native click marker. Recording resolution can be limited to 1280, 1920 or 3840 pixels.
-
-For automatic Do Not Disturb, create paired shortcuts in the macOS Shortcuts app using **Set Focus**. Choose them under **Configure Focus Shortcuts…**, then enable **Use Focus shortcuts while recording**. LeanShot runs the start shortcut before recording and the end shortcut afterward, including when recording ends during Quit. Focus automation requires this one-time setup because macOS provides no public Focus setter. Shortcuts execute locally and are disabled by default.
-
-## Verification
+LeanShot has a built-in test runner, so you don't need XCTest or a full Xcode install.
 
 ```sh
-swift build
-swift run LeanShot --selftest
-swift run LeanShot --preview in.png editor.png
-swift run LeanShot --overlay-preview in.png overlay.png
-plutil -lint Info.plist
+swift run -c release LeanShot --selftest
+swift run -c release LeanShot --bench
 ```
 
-`--selftest` checks Retina crop/rotation/flip, undo/redo, editable project round trips and invalid input, opaque redaction, transparent backgrounds, filename uniqueness, history filtering, scrolling overlap, motion timelines and cursor rendering. It also encodes a real H.264 fixture, verifies trim/speed/square MP4 with smart zoom, renders cursor/blur effects into a GIF, decodes that GIF, and runs the original Retina annotation/OCR checks. The runner works with Command Line Tools; XCTest is not required.
+The self-test runs 15 regression tests. They cover cropping and rotation at Retina resolution, undo and redo, editable projects, the four redaction styles, backgrounds, history filtering, scrolling capture, video export and OCR. The self-test also checks that no two shortcuts collide, and that copies and exports produce valid PNG, JPEG and HEIC data.
 
-## Coverage limits
+The benchmark times the slow paths on a 3024 by 1964 pixel capture, e.g., PNG encoding, a canvas redraw while dragging, and a step of the redaction slider. On an Apple silicon Mac, a canvas redraw while dragging takes about 1.3 ms.
 
-The frozen picker supports free, square, 16:9, 4:3 and 9:16 selection, plus exact dimensions. Camera/key/custom-click overlays and motion tracking target display/area recording; window recording captures only the selected window. Cursor replacement requires pointer-free source video, and Focus automation requires configured macOS shortcuts. Video effects are rendered at export rather than previewed live in the player.
+## Project layout
 
-Live screen capture, microphone/system audio, camera/keystrokes, multi-display placement and launch-at-login still need end-to-end checks with macOS permissions on the built app. Rendering and media-file regression tests do not exercise those permission-bound interactions.
+The source code lives in `Sources/LeanShot`. `Annotate.swift` holds the editor, `QuickAccess.swift` holds the cards and pinned screenshots, and `main.swift` holds the menu bar app and the global shortcuts. `docs/ARCHITECTURE.md` describes how the parts fit together and the conventions the code follows.
