@@ -1,34 +1,25 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.27843,0.38824,0.98039,1.00000"
+    "automatic-gradient" : "extended-srgb:0.97000,0.97000,0.98000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
-        {
-          "fill" : { "solid" : "extended-srgb:1.00000,0.47059,0.30196,1.00000" },
-          "glass" : true,
-          "image-name" : "arrow.svg",
-          "name" : "arrow"
-        }
+        { "glass" : true, "image-name" : "aperture.svg", "name" : "aperture" },
+        { "glass" : true, "image-name" : "lens.svg", "name" : "lens" }
       ],
-      "lighting" : "individual",
-      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "lighting" : "combined",
+      "shadow" : { "kind" : "neutral", "opacity" : 0.6 },
       "specular" : true,
-      "translucency" : { "enabled" : true, "value" : 0.2 }
+      "translucency" : { "enabled" : false, "value" : 0 }
     },
     {
       "layers" : [
-        {
-          "fill" : { "solid" : "extended-srgb:1.00000,1.00000,1.00000,1.00000" },
-          "glass" : true,
-          "image-name" : "corners.svg",
-          "name" : "viewfinder"
-        }
+        { "glass" : true, "image-name" : "photo.svg", "name" : "photo" }
       ],
-      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
       "specular" : true,
-      "translucency" : { "enabled" : true, "value" : 0.4 }
+      "translucency" : { "enabled" : true, "value" : 0.15 }
     }
   ],
   "supported-platforms" : {
