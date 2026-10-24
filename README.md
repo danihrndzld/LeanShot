@@ -125,6 +125,8 @@ swift run -c release LeanShot --bench
 
 The self-test runs 15 regression tests. They cover cropping and rotation at Retina resolution, undo and redo, editable projects, the four redaction styles, backgrounds, history filtering, scrolling capture, video export and OCR. The self-test also checks that no two shortcuts collide, and that copies and exports produce valid PNG, JPEG and HEIC data.
 
+The end-to-end tests open the real editor through the same entry point Finder uses, then send real mouse and key events to the editor window. They check what a user would see, e.g., the saved file, its pixels, the clipboard, the Trash and the save or discard sheet. Run them with `scripts/e2e.sh`, which also measures code coverage. GitHub Actions runs the self-test and the end-to-end tests on every push and pull request.
+
 The benchmark times the slow paths on a 3024 by 1964 pixel capture, e.g., PNG encoding, a canvas redraw while dragging, and a step of the redaction slider. On an Apple silicon Mac, a canvas redraw while dragging takes about 1.3 ms.
 
 ## Project layout

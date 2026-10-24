@@ -10,6 +10,7 @@ Read `docs/ARCHITECTURE.md` before a change that touches more than one file. It 
 ./build.sh                                   # build/LeanShot.app, real SDK stamped, signed
 .build/release/LeanShot --selftest           # regression tests, exit 0 on success
 .build/release/LeanShot --bench              # timings for the slow paths
+scripts/e2e.sh [dir]                         # end-to-end tests: junit.xml + coverage.json in dir (default build/e2e)
 build/LeanShot.app/Contents/MacOS/LeanShot --preview in.png out.png [--background]
 scripts/make_dmg.sh                          # signed app and DMG in build/
 ```

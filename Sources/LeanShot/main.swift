@@ -380,6 +380,11 @@ enum Hotkeys {
 }
 
 if CommandLine.arguments.contains("--bench") { Bench.run() }
+if let i = CommandLine.arguments.firstIndex(of: "--e2e") {
+    _ = NSApplication.shared
+    let out = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "e2e-junit.xml"
+    E2ETests.run(junit: URL(fileURLWithPath: out))
+}
 if CommandLine.arguments.contains("--selftest") {
     do { try EditorTests.run() } catch { fatalError("Regression tests: \(error)") }
     var videoTestsFinished = false

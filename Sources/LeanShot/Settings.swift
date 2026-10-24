@@ -2,7 +2,9 @@ import AppKit
 import ServiceManagement
 
 enum Settings {
-    static let defaults = UserDefaults.standard
+    /// `--e2e` runs against a throwaway defaults domain, so tests never read or change the user's settings.
+    static let e2eSuite = "com.danisnowman.leanshot.e2e"
+    static let defaults = CommandLine.arguments.contains("--e2e") ? UserDefaults(suiteName: e2eSuite)! : .standard
     // Every UserDefaults key lives here; interpolated keys go through these builders so a typo cannot reset a value.
     enum HotkeyPart: String { case code, modifiers, key }
     static func hotkeyKey(_ defaultCode: UInt32, _ part: HotkeyPart) -> String { "hotkey.\(defaultCode).\(part.rawValue)" }
