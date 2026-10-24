@@ -14,17 +14,22 @@ enum QuickAccess {
         let right = OverlayCard(url: url, screen: NSScreen.main)
         left.panel.setFrameOrigin(NSPoint(x: 100, y: 120)); right.panel.setFrameOrigin(NSPoint(x: 420, y: 120))
         left.panel.orderFrontRegardless(); right.panel.orderFrontRegardless(); right.setHovered(true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            let views = [left, right]
-            let size = NSSize(width: left.bounds.width * 2 + 72, height: left.bounds.height + 80)
+        // Real window captures, so glass, blur and the layered shadow render as on screen.
+        [left, right].forEach { $0.panel.sharingType = .readOnly }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let parts = [left, right].map { card -> URL in
+                let file = output.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".png")
+                let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                task.arguments = ["-x", "-o", "-l\(card.panel.windowNumber)", file.path]; try? task.run(); task.waitUntilExit()
+                return file
+            }
+            let images = parts.compactMap { NSImage(contentsOf: $0) }
+            parts.forEach { try? FileManager.default.removeItem(at: $0) }
+            guard images.count == 2 else { print("capture failed"); exit(1) }
+            let size = NSSize(width: images[0].size.width * 2 + 24, height: images[0].size.height + 24)
             let image = ImageTools.render(size: size, pixels: NSSize(width: size.width * 2, height: size.height * 2)) { rect in
-                NSColor(srgbRed: 0.22, green: 0.3, blue: 0.44, alpha: 1).setFill(); rect.fill()
-                for (index, view) in views.enumerated() {
-                    if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                        view.cacheDisplay(in: view.bounds, to: rep)
-                        rep.draw(in: NSRect(x: 24 + CGFloat(index) * (view.bounds.width + 24), y: 28, width: view.bounds.width, height: view.bounds.height))
-                    }
-                }
+                NSColor(srgbRed: 0.91, green: 0.92, blue: 0.95, alpha: 1).setFill(); rect.fill()
+                for (index, part) in images.enumerated() { part.draw(at: NSPoint(x: 12 + CGFloat(index) * (part.size.width + 0), y: 12), from: .zero, operation: .sourceOver, fraction: 1) }
             }
             do { try ImageTools.png(image)?.write(to: output); print("wrote \(output.path)"); exit(0) }
             catch { print(error); exit(1) }
@@ -41,16 +46,24 @@ enum QuickAccess {
             recentlyClosed.removeAll { $0 == url }; show(url)
         } else { layout() }
     }
-    static func close(_ card: OverlayCard) {
+    /// `dx` sends the card off in a swipe's direction; nil slides it back toward its screen edge.
+    static func close(_ card: OverlayCard, dx: CGFloat? = nil) {
         recentlyClosed.removeAll { $0 == card.url }; recentlyClosed.insert(card.url, at: 0)
         recentlyClosed = Array(recentlyClosed.prefix(8))
-        card.panel.orderOut(nil); card.panel.contentView = nil; cards.removeAll { $0 === card }; layout()
+        cards.removeAll { $0 === card }; layout()
+        let panel = card.panel
+        guard panel.isVisible, !Anim.reduced else { panel.orderOut(nil); panel.contentView = nil; return }
+        // Slide back toward the edge it came from; the card stays alive until the panel lets go.
+        Anim.run(0.2, {
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(panel.frame.offsetBy(dx: dx ?? edgeOffset(panel), dy: 0), display: false)
+        }) { panel.orderOut(nil); panel.contentView = nil }
     }
+    private static func edgeOffset(_ panel: NSPanel) -> CGFloat { (Settings.corner % 2 == 1 ? 1 : -1) * (panel.frame.width + 24) }
     static func show(_ url: URL) {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         if let existing = cards.first(where: { $0.url == url }) { close(existing) }
-        let pointer = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
+        let screen = NSScreen.underPointer
         let card = OverlayCard(url: url, screen: screen)
         cards.insert(card, at: 0)
         while cards.count > 4 { close(cards.last!) }
@@ -70,14 +83,24 @@ enum QuickAccess {
             let screen = card.screen ?? NSScreen.main
             let f = screen?.visibleFrame ?? .zero
             let id = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
-            let offset = offsets[id] ?? 20
+            let offset = offsets[id] ?? 14
             let right = Settings.corner % 2 == 1, top = Settings.corner >= 2
-            let x = right ? f.maxX - card.panel.frame.width - 20 : f.minX + 20
-            let y = top ? f.maxY - offset - card.panel.frame.height : f.minY + offset
-            if offset + card.panel.frame.height > f.height { card.panel.orderOut(nil); continue }
-            card.panel.setFrameOrigin(NSPoint(x: x, y: y))
-            if !hidden { card.panel.orderFrontRegardless() }
-            offsets[id] = offset + card.panel.frame.height + 12
+            let m = OverlayCard.margin, w = card.panel.frame.width - 2 * m, h = card.panel.frame.height - 2 * m
+            let x = (right ? f.maxX - w - 14 : f.minX + 14) - m
+            let y = (top ? f.maxY - offset - h : f.minY + offset) - m
+            if offset + h > f.height { card.panel.orderOut(nil); continue }
+            offsets[id] = offset + h + 8
+            let target = NSRect(origin: NSPoint(x: x, y: y), size: card.panel.frame.size)
+            guard !hidden else { card.panel.setFrame(target, display: false); continue }
+            if card.panel.isVisible {
+                Anim.run(0.3) { card.panel.animator().setFrame(target, display: true) } // restack
+            } else {
+                // New cards slide in from the screen edge; returning cards just fade back.
+                card.panel.setFrame(card.presented ? target : target.offsetBy(dx: edgeOffset(card.panel), dy: 0), display: false)
+                card.panel.alphaValue = 0; card.panel.orderFrontRegardless()
+                Anim.run(card.presented ? 0.2 : 0.38) { card.panel.animator().alphaValue = 1; card.panel.animator().setFrame(target, display: true) }
+                card.presented = true
+            }
         }
     }
 }
@@ -89,6 +112,7 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
     var isHovered = false
     var isDragging = false
     var menuIsOpen = false
+    var presented = false
     private let controls = NSView()
     private let thumbnail: DragImageView
     private var actions: [() -> Void] = []
@@ -96,54 +120,50 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
 
     init(url: URL, screen: NSScreen?) {
         self.url = url; self.screen = screen
-        let image = NSImage(contentsOf: url)
+        let image = Thumbnail.image(url, maxPixels: 600) // the card is at most 230 pt wide
         let width = Settings.overlayWidth
         let ratio = image.map { $0.size.height / max(1, $0.size.width) } ?? 0.56
-        let height = min(210, max(110, width * ratio))
+        let height = min(150, max(84, width * ratio))
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
-        panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let m = OverlayCard.margin
+        panel = NSPanel(contentRect: frame.insetBy(dx: -m, dy: -m), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         thumbnail = DragImageView(frame: frame)
         super.init(frame: frame)
-        wantsLayer = true; layer?.cornerRadius = 16; layer?.masksToBounds = true
+        wantsLayer = true; layer?.cornerRadius = Glass.available ? 18 : 14; layer?.cornerCurve = .continuous; layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         panel.level = .floating; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
         // Exclude overlays from screenshots taken by screen capture APIs.
         panel.sharingType = .none
         thumbnail.url = url; thumbnail.image = image ?? NSWorkspace.shared.icon(forFile: url.path)
         if image == nil, ["mov", "mp4"].contains(url.pathExtension.lowercased()) {
-            Task { @MainActor [weak self] in
-                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url)); generator.appliesPreferredTrackTransform = true
-                generator.maximumSize = CGSize(width: 680, height: 420)
-                if let frame = try? await generator.image(at: .zero) {
-                    self?.thumbnail.image = NSImage(cgImage: frame.image, size: NSSize(width: frame.image.width, height: frame.image.height))
-                }
-            }
+            Task { @MainActor [weak self] in if let frame = await Thumbnail.video(url, maxPixels: 680) { self?.thumbnail.image = frame } }
         }
         thumbnail.imageScaling = .scaleProportionallyUpOrDown
         thumbnail.toolTip = "Drag to any app · Double-click to edit · Right-click for actions"
         thumbnail.doubleClick = { [weak self] in self?.edit() }
         thumbnail.dragging = { [weak self] in self?.isDragging = $0; if !$0 { self?.setHovered(false) } }
         addSubview(thumbnail)
+        // Hover frosts the thumbnail with a dark blur, so controls read the same on any screenshot.
         let shade = NSVisualEffectView(frame: bounds)
         shade.material = .hudWindow; shade.state = .active; shade.blendingMode = .withinWindow
-        controls.frame = bounds
+        controls.frame = bounds; controls.appearance = NSAppearance(named: .darkAqua)
         controls.addSubview(shade)
         // Keep the center image draggable. Only actual buttons intercept events.
-        shade.alphaValue = 0.85
-        let copy = button("Copy", symbol: nil, rect: NSRect(x: (width - 80) / 2, y: height / 2 + 2, width: 80, height: 28)) { Clipboard.copy(url); Toast.show("Copied") }
-        copy.bezelStyle = .rounded
-        let save = button("Save…", symbol: nil, rect: NSRect(x: (width - 80) / 2, y: height / 2 - 32, width: 80, height: 28)) { [weak self] in self?.save() }
-        save.bezelStyle = .rounded
-        _ = button("Pin to Screen", symbol: "pin.fill", rect: NSRect(x: 10, y: height - 36, width: 28, height: 28)) { [weak self] in self?.pin() }
-        _ = button("Close", symbol: "xmark", rect: NSRect(x: width - 38, y: height - 36, width: 28, height: 28)) { [weak self] in if let self { QuickAccess.close(self) } }
-        _ = button("Annotate", symbol: "pencil", rect: NSRect(x: 10, y: 8, width: 28, height: 28)) { [weak self] in self?.edit() }
-        _ = button("Share", symbol: "square.and.arrow.up", rect: NSRect(x: width - 38, y: 8, width: 28, height: 28)) { [weak self] in self?.share() }
+        let copy = button("Copy", symbol: nil, rect: NSRect(x: width / 2 - 66, y: height / 2 - 11, width: 62, height: 24)) { Clipboard.copy(url); Toast.show("Copied", symbol: "checkmark.circle.fill") }
+        copy.bezelStyle = .rounded; Glass.style(copy)
+        let save = button("Save", symbol: nil, rect: NSRect(x: width / 2 + 4, y: height / 2 - 11, width: 62, height: 24)) { [weak self] in self?.save() }
+        save.bezelStyle = .rounded; Glass.style(save)
+        for b in [copy, save] { b.attributedTitle = NSAttributedString(string: b.title, attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]) }
+        _ = button("Pin to Screen", symbol: "pin.fill", rect: NSRect(x: 8, y: height - 32, width: 24, height: 24)) { [weak self] in self?.pin() }
+        _ = button("Close", symbol: "xmark", rect: NSRect(x: width - 32, y: height - 32, width: 24, height: 24)) { [weak self] in if let self { QuickAccess.close(self) } }
+        _ = button("Annotate", symbol: "pencil", rect: NSRect(x: 8, y: 8, width: 24, height: 24)) { [weak self] in self?.edit() }
+        _ = button("Share", symbol: "square.and.arrow.up", rect: NSRect(x: width - 32, y: 8, width: 24, height: 24)) { [weak self] in self?.share() }
         let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         let info = NSTextField(labelWithString: ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
         info.font = .systemFont(ofSize: 10); info.textColor = .secondaryLabelColor; info.alignment = .center
-        info.frame = NSRect(x: 44, y: 12, width: width - 88, height: 16); controls.addSubview(info)
-        controls.isHidden = true
+        info.frame = NSRect(x: 36, y: 12, width: width - 72, height: 14); controls.addSubview(info)
+        controls.alphaValue = 0
         addSubview(controls)
         let menu = NSMenu()
         func action(_ title: String, _ run: @escaping () -> Void) {
@@ -171,17 +191,28 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
             catch { NSAlert(error: error).runModal() }
         }
         menu.delegate = self; self.menu = menu; thumbnail.menu = menu
-        panel.contentView = self
+        // Own layered shadow (soft ambient + tight contact) instead of the window server's hard one.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width + 2 * m, height: height + 2 * m)); container.wantsLayer = true
+        for (radius, offset, opacity) in [(CGFloat(22), CGFloat(-12), Float(0.24)), (5, -2, 0.14)] {
+            let shadow = CALayer(); shadow.frame = NSRect(x: m, y: m, width: width, height: height)
+            shadow.shadowPath = CGPath(roundedRect: shadow.bounds, cornerWidth: layer!.cornerRadius, cornerHeight: layer!.cornerRadius, transform: nil)
+            shadow.shadowColor = NSColor.black.cgColor; shadow.shadowRadius = radius; shadow.shadowOffset = CGSize(width: 0, height: offset); shadow.shadowOpacity = opacity
+            container.layer?.addSublayer(shadow)
+        }
+        setFrameOrigin(NSPoint(x: m, y: m)); container.addSubview(self)
+        panel.contentView = container
     }
+    /// Transparent room around the card for its shadow; layout subtracts it so cards keep their 20 pt inset.
+    static let margin: CGFloat = 40
     required init?(coder: NSCoder) { fatalError() }
     private func button(_ title: String, symbol: String?, rect: NSRect, action: @escaping () -> Void) -> NSButton {
         let b = ClosureButton(frame: rect, action: action); b.title = symbol == nil ? title : ""
-        if let symbol { b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title) }
-        b.bezelStyle = .circular; b.toolTip = title; controls.addSubview(b); return b
+        if let symbol { b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(.init(paletteColors: [.white])) }
+        b.bezelStyle = .circular; if symbol != nil { Glass.style(b, circle: true) }; b.toolTip = title; controls.addSubview(b); return b
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
-        if !controls.isHidden {
+        if isHovered {
             for button in controls.subviews.compactMap({ $0 as? NSButton }) where button.frame.contains(p) { return button }
         }
         return bounds.contains(p) ? thumbnail : nil
@@ -195,7 +226,24 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
     override func mouseEntered(with event: NSEvent) { setHovered(true) }
     override func mouseExited(with event: NSEvent) { if !isDragging { setHovered(false) } }
     override func swipe(with event: NSEvent) { if abs(event.deltaX) > 0 { QuickAccess.close(self) } }
-    fileprivate func setHovered(_ value: Bool) { isHovered = value; controls.isHidden = !value }
+    /// Two-finger horizontal swipe: the card follows the fingers and flies off past 60 pt, otherwise springs back.
+    private var swipe: (home: NSRect, dx: CGFloat)?
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return }
+        if event.phase == .began, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) { swipe = (panel.frame, 0) }
+        guard var s = swipe else { return }
+        s.dx += event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        swipe = s
+        if event.phase == .changed { panel.setFrameOrigin(s.home.origin.applying(.init(translationX: s.dx, y: 0))); panel.alphaValue = max(0.3, 1 - abs(s.dx) / 300) }
+        guard event.phase == .ended || event.phase == .cancelled else { return }
+        swipe = nil
+        if event.phase == .ended, abs(s.dx) > 60 { QuickAccess.close(self, dx: (s.dx > 0 ? 1 : -1) * (s.home.width + 40)) }
+        else { Anim.run(0.25) { panel.animator().setFrame(s.home, display: true); panel.animator().alphaValue = 1 } }
+    }
+    fileprivate func setHovered(_ value: Bool) {
+        isHovered = value
+        Anim.run(value ? 0.16 : 0.12) { controls.animator().alphaValue = value ? 1 : 0 }
+    }
     @objc private func menuAction(_ sender: NSMenuItem) { actions[sender.tag]() }
     func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
     func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
@@ -206,7 +254,7 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { 1 }
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url as NSURL }
     private func edit() {
-        if NSImage(contentsOf: url) != nil { AnnotateWindow.open(url) }
+        if Thumbnail.isImage(url) { AnnotateWindow.open(url) }
         else { VideoEditor.open(url) }
     }
     private func pin() { if let image = NSImage(contentsOf: url) { PinWindow.pin(image) } }
@@ -214,7 +262,7 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
         let p = NSSavePanel(); p.nameFieldStringValue = url.lastPathComponent
         NSApp.activate(ignoringOtherApps: true)
         if p.runModal() == .OK, let destination = p.url, destination != url {
-            do { let data = try Data(contentsOf: url); try data.write(to: destination, options: .atomic); Toast.show("Saved") }
+            do { let data = try Data(contentsOf: url); try data.write(to: destination, options: .atomic); Toast.show("Saved", symbol: "checkmark.circle.fill") }
             catch { NSAlert(error: error).runModal() }
         }
     }
@@ -245,14 +293,22 @@ final class DragImageView: NSImageView, NSDraggingSource {
     var doubleClick: (() -> Void)?
     var dragging: ((Bool) -> Void)?
 
+    private var pressed: NSEvent?
     override func mouseDown(with event: NSEvent) {
         guard let url else { return }
         if event.clickCount == 2 { if let doubleClick { doubleClick() } else { NSWorkspace.shared.open(url) }; return }
+        pressed = event // a drag starts only after 4 pt of movement, so plain clicks stay clicks
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let url, let start = pressed,
+              hypot(event.locationInWindow.x - start.locationInWindow.x, event.locationInWindow.y - start.locationInWindow.y) > 4 else { return }
+        pressed = nil
         let item = NSDraggingItem(pasteboardWriter: url as NSURL)
         item.setDraggingFrame(bounds, contents: image)
         dragging?(true)
-        beginDraggingSession(with: [item], event: event, source: self)
+        beginDraggingSession(with: [item], event: start, source: self)
     }
+    override func mouseUp(with event: NSEvent) { pressed = nil }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { dragging?(false) }
 
@@ -265,7 +321,7 @@ final class PinWindow: NSPanel {
     static func unlockAll() { open.forEach { $0.ignoresMouseEvents = false } }
 
     static func pin(_ image: NSImage) {
-        let screen = NSScreen.main?.visibleFrame ?? .zero
+        let screen = NSScreen.underPointer?.visibleFrame ?? .zero
         var size = image.size
         let fit = min(1, screen.width * 0.6 / size.width, screen.height * 0.6 / size.height)
         size = NSSize(width: size.width * fit, height: size.height * fit)
@@ -277,16 +333,24 @@ final class PinWindow: NSPanel {
         view.autoresizingMask = [.width, .height]
         w.contentView = view
         let menu = NSMenu()
-        for (title, action) in [("Lock (Click Through)", #selector(lockPin)), ("Opacity 50% / 100%", #selector(toggleOpacity)), ("Close", #selector(closePin))] {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = w; menu.addItem(item)
+        // A pin is a working surface: copy, save or mark it up without hunting for the original file.
+        for (title, action, key) in [("Copy", #selector(copyPin), "c"), ("Save As…", #selector(savePin), "s"), ("Annotate…", #selector(annotatePin), ""), ("", nil, ""),
+                                     ("Lock (Click Through)", #selector(lockPin), ""), ("Opacity 50% / 100%", #selector(toggleOpacity), ""), ("Close", #selector(closePin), "w")] as [(String, Selector?, String)] {
+            if title.isEmpty { menu.addItem(.separator()); continue }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key); item.target = w; menu.addItem(item)
         }
+        w.image = image
         view.menu = menu
         w.aspectRatio = size
         w.level = .floating
         w.hasShadow = true
         w.isMovableByWindowBackground = true
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let target = w.frame
+        w.setFrame(target.insetBy(dx: target.width * 0.04, dy: target.height * 0.04), display: false)
+        w.alphaValue = 0
         w.makeKeyAndOrderFront(nil)
+        Anim.run(0.24) { w.animator().alphaValue = 1; w.animator().setFrame(target, display: true) }
         open.append(w)
     }
 
@@ -306,8 +370,31 @@ final class PinWindow: NSPanel {
         setFrameOrigin(origin)
     }
     @objc private func lockPin() { ignoresMouseEvents = true; Toast.show("Pin locked · Menu → Unlock Floating Screenshots") }
-    @objc private func toggleOpacity() { alphaValue = alphaValue < 1 ? 1 : 0.5 }
+    @objc private func toggleOpacity() { let value: CGFloat = alphaValue < 1 ? 1 : 0.5; Anim.run(0.2) { animator().alphaValue = value } }
     @objc private func closePin() { dismiss() }
+    private var image = NSImage()
+    @objc private func copyPin() { Clipboard.copy(image); Toast.show("Copied", symbol: "checkmark.circle.fill") }
+    @objc private func savePin() {
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.png]; panel.nameFieldStringValue = "Pinned Screenshot.png"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { guard let png = ImageTools.png(image) else { throw CocoaError(.fileWriteUnknown) }; try png.write(to: url, options: .atomic) }
+        catch { NSAlert(error: error).runModal() }
+    }
+    @objc private func annotatePin() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Pinned Screenshot \(UUID().uuidString.prefix(4)).png")
+        guard let png = ImageTools.png(image), (try? png.write(to: url)) != nil else { return NSSound.beep() }
+        AnnotateWindow.open(url)
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }
+        switch event.charactersIgnoringModifiers {
+        case "c": copyPin(); return true
+        case "s": savePin(); return true
+        case "w": dismiss(); return true
+        default: return super.performKeyEquivalent(with: event)
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { dismiss() } else { super.mouseDown(with: event) }
@@ -325,8 +412,8 @@ final class PinWindow: NSPanel {
     }
 
     private func dismiss() {
-        orderOut(nil)
         PinWindow.open.removeAll { $0 === self }
+        Anim.run(0.15, { animator().alphaValue = 0 }) { self.orderOut(nil) }
     }
 }
 

@@ -55,6 +55,9 @@ enum Stitcher {
     }
 }
 
+/// Titled non-activating panel that still takes keys, so the page being captured keeps focus for scrolling.
+private final class KeyPanel: NSPanel { override var canBecomeKey: Bool { true } }
+
 final class ScrollingSession {
     private static var current: ScrollingSession?
     static var active: Bool { current != nil }
@@ -64,23 +67,27 @@ final class ScrollingSession {
     private let horizontal: Bool
     private let panel: NSPanel
     private let label = NSTextField(labelWithString: "1 frame · Scroll, pause, then Add Frame")
-    private var busy = false
+    private var busy = false { didSet { buttons.forEach { $0.isEnabled = !busy } } } // greyed while a frame is stitched
+    private var buttons: [NSButton] = []
     private var frames = 1
     private var autoTimer: Timer?
     private var unchangedFrames = 0
     private init(region: ScreenRegion, image: NSImage, horizontal: Bool) {
         self.region = region; self.previous = image; self.result = image; self.horizontal = horizontal
         let f = region.screen.visibleFrame
-        panel = NSPanel(contentRect: NSRect(x: f.midX - 316, y: f.minY + 24, width: 632, height: 100), styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = KeyPanel(contentRect: NSRect(x: f.midX - 316, y: f.minY + 24, width: 632, height: 100), styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = horizontal ? "Scrolling Capture — Horizontal" : "Scrolling Capture — Vertical"
         panel.level = .floating; panel.isReleasedWhenClosed = false
         label.frame = NSRect(x: 16, y: 66, width: 600, height: 22); panel.contentView?.addSubview(label)
-        let actions: [(String, () -> Void)] = [("Add Frame", { [weak self] in self?.addFrame() }), ("Auto / Stop", { [weak self] in self?.toggleAuto() }), ("Finish", { [weak self] in self?.finish() }), ("Cancel", { [weak self] in self?.cancel() })]
-        for (i, pair) in actions.enumerated() {
-            let b = ClosureButton(frame: NSRect(x: 16 + i * 152, y: 16, width: 140, height: 32), action: pair.1)
-            b.title = pair.0; b.bezelStyle = .rounded; panel.contentView?.addSubview(b)
+        // Keyboard rhythm for long pages: Return adds a frame, A toggles auto, ⌘Return finishes, Esc cancels.
+        let actions: [(String, String, NSEvent.ModifierFlags, () -> Void)] = [("Add Frame ↩", "\r", [], { [weak self] in self?.addFrame() }), ("Auto / Stop (A)", "a", [], { [weak self] in self?.toggleAuto() }),
+                                                                            ("Finish ⌘↩", "\r", .command, { [weak self] in self?.finish() }), ("Cancel (Esc)", "\u{1b}", [], { [weak self] in self?.cancel() })]
+        for (i, action) in actions.enumerated() {
+            let b = ClosureButton(frame: NSRect(x: 16 + i * 152, y: 16, width: 140, height: 32), action: action.3)
+            b.title = action.0; b.bezelStyle = .rounded; b.keyEquivalent = action.1; b.keyEquivalentModifierMask = action.2
+            panel.contentView?.addSubview(b); buttons.append(b)
         }
-        panel.orderFrontRegardless()
+        panel.makeKeyAndOrderFront(nil)
     }
     private func toggleAuto() {
         if autoTimer != nil { stopAuto(); label.stringValue = "Automatic scrolling stopped"; return }
@@ -135,8 +142,8 @@ final class ScrollingSession {
                         result = candidate; previous = next; frames += 1; label.stringValue = "\(frames) frames · \(Int(pixels.width)) × \(Int(pixels.height)) px"
                     }
                 } else { stopAuto(); label.stringValue = "No overlap found · Scroll back a little and retry" }
-            } catch { stopAuto(); NSAlert(error: error).runModal() }
-            busy = false; panel.orderFrontRegardless()
+            } catch { stopAuto(); Permissions.explain(error) }
+            busy = false; panel.makeKeyAndOrderFront(nil)
         }
     }
     private func finish() {

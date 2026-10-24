@@ -2,31 +2,75 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleExecutable</key><string>LeanShot</string>
-	<key>CFBundleIdentifier</key><string>com.danisnowman.leanshot</string>
-	<key>CFBundleName</key><string>LeanShot</string>
-	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.2</string>
-	<key>CFBundleVersion</key><string>2</string>
-	<key>LSMinimumSystemVersion</key><string>14.0</string>
-	<key>LSUIElement</key><true/>
-	<key>NSPrincipalClass</key><string>NSApplication</string>
-	<key>NSMicrophoneUsageDescription</key><string>LeanShot records your microphone when you enable microphone audio for a screen recording.</string>
-	<key>NSCameraUsageDescription</key><string>LeanShot displays your camera in screen recordings when you enable the camera overlay.</string>
-	<key>CFBundleURLTypes</key>
-	<array><dict><key>CFBundleURLName</key><string>LeanShot Commands</string><key>CFBundleURLSchemes</key><array><string>leanshot</string></array></dict></array>
-	<key>UTExportedTypeDeclarations</key>
-	<array><dict>
-		<key>UTTypeIdentifier</key><string>com.danisnowman.leanshot.project</string>
-		<key>UTTypeDescription</key><string>LeanShot Editable Project</string>
-		<key>UTTypeConformsTo</key><array><string>public.json</string></array>
-		<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>leanshot</string></array></dict>
-	</dict></array>
 	<key>CFBundleDocumentTypes</key>
-	<array><dict>
-		<key>CFBundleTypeName</key><string>LeanShot Project</string>
-		<key>CFBundleTypeRole</key><string>Editor</string>
-		<key>LSItemContentTypes</key><array><string>com.danisnowman.leanshot.project</string></array>
-	</dict></array>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>LeanShot Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.danisnowman.leanshot.project</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleExecutable</key>
+	<string>LeanShot</string>
+	<key>CFBundleIconFile</key>
+	<string>LeanShot</string>
+	<key>CFBundleIconName</key>
+	<string>LeanShot</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.danisnowman.leanshot</string>
+	<key>CFBundleName</key>
+	<string>LeanShot</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>LeanShot Commands</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>leanshot</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>3</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>LeanShot displays your camera in screen recordings when you enable the camera overlay.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LeanShot records your microphone when you enable microphone audio for a screen recording.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>LeanShot Editable Project</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.danisnowman.leanshot.project</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>leanshot</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

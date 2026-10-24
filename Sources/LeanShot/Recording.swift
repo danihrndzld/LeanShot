@@ -3,7 +3,7 @@ import ScreenCaptureKit
 import AVFoundation
 
 @available(macOS 15.0, *)
-final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
+final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate, SCContentSharingPickerObserver {
     static let shared = Recorder()
     private var stream: SCStream?
     private var output: SCRecordingOutput?
@@ -21,32 +21,39 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     private let focus = FocusAutomation()
     private var termination: ((Bool) -> Void)?
 
+    /// The system window picker (thumbnails, search, every display) instead of a menu of window titles.
+    private var pickerCompletion: ((URL?) -> Void)?
     func chooseWindow(completion: @escaping (URL?) -> Void) {
         guard !busy, Capture.current == nil, !RegionSelector.isSelecting else { NSSound.beep(); return }
-        busy = true
-        Task { @MainActor in
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-                let windows = content.windows.filter { $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier && $0.frame.width > 100 && $0.frame.height > 60 && $0.windowLayer == 0 }
-                guard !windows.isEmpty else { throw CocoaError(.fileNoSuchFile) }
-                let alert = NSAlert(); alert.messageText = "Record a Window"; alert.informativeText = "The selected window is recorded even when other windows cover it."
-                let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28))
-                // addItem deduplicates titles: create each item explicitly to preserve indices.
-                for window in windows { picker.menu?.addItem(NSMenuItem(title: "\(window.owningApplication?.applicationName ?? "App") — \(window.title ?? "Untitled")", action: nil, keyEquivalent: "")) }
-                picker.selectItem(at: 0); alert.accessoryView = picker; alert.addButton(withTitle: "Record"); alert.addButton(withTitle: "Cancel")
-                NSApp.activate(ignoringOtherApps: true)
-                guard alert.runModal() == .alertFirstButtonReturn else { busy = false; return }
-                let window = windows[picker.indexOfSelectedItem]
-                recordingBounds = nil
-                busy = false
-                await start(filter: SCContentFilter(desktopIndependentWindow: window), sourceRect: nil, size: window.frame.size, completion: completion)
-            } catch { busy = false; NSAlert(error: error).runModal() }
+        busy = true; pickerCompletion = completion
+        let picker = SCContentSharingPicker.shared
+        var configuration = SCContentSharingPickerConfiguration()
+        configuration.allowedPickerModes = [.singleWindow]
+        configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier].compactMap { $0 }
+        picker.defaultConfiguration = configuration
+        picker.add(self); picker.isActive = true
+        picker.present(using: .window)
+    }
+    private func endPicking() {
+        SCContentSharingPicker.shared.remove(self); SCContentSharingPicker.shared.isActive = false; busy = false
+    }
+    func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
+        DispatchQueue.main.async { [self] in
+            guard let completion = pickerCompletion else { return }
+            pickerCompletion = nil; endPicking(); recordingBounds = nil
+            Task { @MainActor in await start(filter: filter, sourceRect: nil, size: filter.contentRect.size, completion: completion) }
         }
+    }
+    func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
+        DispatchQueue.main.async { [self] in pickerCompletion = nil; endPicking() }
+    }
+    func contentSharingPickerStartDidFailWithError(_ error: Error) {
+        DispatchQueue.main.async { [self] in pickerCompletion = nil; endPicking(); Permissions.explain(error) }
     }
     func startDisplay(region: ScreenRegion? = nil, completion: @escaping (URL?) -> Void) {
         guard !busy, Capture.current == nil else { NSSound.beep(); return }
         busy = true
-        let screen = region?.screen ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+        let screen = region?.screen ?? NSScreen.underPointer
         let id = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
         Task { @MainActor in
             do {
@@ -60,7 +67,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
                 let source = region.map { CGRect(x: $0.rect.minX, y: (screen?.frame.height ?? CGFloat(display.height)) - $0.rect.maxY, width: $0.rect.width, height: $0.rect.height) }
                 busy = false
                 await start(filter: filter, sourceRect: source, size: region?.rect.size ?? screen?.frame.size ?? display.frame.size, completion: completion)
-            } catch { decorations.stop(); busy = false; NSAlert(error: error).runModal() }
+            } catch { decorations.stop(); busy = false; Permissions.explain(error) }
         }
     }
     @MainActor private func start(filter: SCContentFilter, sourceRect: CGRect?, size: CGSize, completion: @escaping (URL?) -> Void) async {
@@ -121,7 +128,7 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
         guard busy else { return }
         let active = stream; finish(nil)
         Task { try? await active?.stopCapture() }
-        NSAlert(error: error).runModal()
+        Permissions.explain(error)
     }
     private func finish(_ result: URL?) {
         timer?.invalidate(); timer = nil; stream = nil; output = nil; url = nil; busy = false; recording = false

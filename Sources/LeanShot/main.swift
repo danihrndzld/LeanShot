@@ -3,11 +3,15 @@ import Carbon
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var lastCapture: URL? = CaptureHistory.files().first { NSImage(contentsOf: $0) != nil }
+    private var lastCapture: URL? = CaptureHistory.files().first(where: Thumbnail.isImage)
     private var recordItem: NSMenuItem?
     private var quitAfterRecording = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Unsaved annotations: show the editor's own Save / Discard sheet instead of quitting.
+        if let edited = NSApp.windows.first(where: { $0 is AnnotateWindow && $0.isDocumentEdited && $0.isVisible }) {
+            NSApp.activate(ignoringOtherApps: true); edited.makeKeyAndOrderFront(nil); edited.performClose(nil); return .terminateCancel
+        }
         if #available(macOS 15.0, *), Recorder.shared.busy {
             if Recorder.shared.stopForTermination({ NSApp.reply(toApplicationShouldTerminate: $0) }) { return .terminateLater }
             Toast.show("Wait for recording startup or saving to finish before quitting"); return .terminateCancel
@@ -55,9 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.perform(action)
             }
             if let shortcut = Hotkeys.display(keyCode) { item.keyEquivalent = shortcut.key; item.keyEquivalentModifierMask = shortcut.flags }
+            else { item.keyEquivalent = "" } // taken by another app: show no shortcut rather than a dead one
         }
+        let taken = items.filter { Hotkeys.unavailable($0.1) }.map(\.0)
+        if !taken.isEmpty { Toast.show("Another app uses the shortcut for \(taken.joined(separator: ", ")). Pick a new one in Settings → Shortcuts.", symbol: "keyboard") }
         menu.addItem(.separator())
-        for (title, action) in [("Capture Area in 5 s", #selector(captureAreaTimer)),
+        for (index, (title, action)) in [("Capture Area in 5 s", #selector(captureAreaTimer)),
                                 ("Annotate Last Capture", #selector(annotateLast)),
                                 ("Pin Last Capture", #selector(pinLast)),
                                 ("Unlock Floating Screenshots", #selector(unlockPins)),
@@ -72,17 +79,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 ("Open Image…", #selector(openImage)),
                                 ("Settings…", #selector(settings)),
                                 ("Keyboard Shortcuts…", #selector(shortcuts)),
-                                ("Open Captures Folder", #selector(openFolder))] {
+                                ("Open Captures Folder", #selector(openFolder))].enumerated() {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             menu.addItem(item)
+            // Every other action can get a global shortcut in Settings → Shortcuts; none is set by default.
+            guard ![#selector(settings), #selector(shortcuts)].contains(action) else { continue }
+            let id = Hotkeys.extraBase + UInt32(index)
+            item.tag = Int(id); AppDelegate.extraShortcuts.append((title.replacingOccurrences(of: "…", with: ""), id))
+            Hotkeys.register(keyCode: id, modifiers: 0, key: "", optional: true) { [weak self] in self?.perform(action) }
+            if let shortcut = Hotkeys.display(id) { item.keyEquivalent = shortcut.key; item.keyEquivalentModifierMask = shortcut.flags }
         }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit LeanShot", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q"))
+        let symbols = ["All-in-One…": "rectangle.dashed.badge.record", "Capture Area": "rectangle.dashed", "Capture Window": "macwindow", "Capture Fullscreen": "display",
+                       "Capture Text (OCR)": "text.viewfinder", "Record Screen": "record.circle", "Capture Area in 5 s": "timer", "Annotate Last Capture": "pencil.tip.crop.circle",
+                       "Pin Last Capture": "pin", "Unlock Floating Screenshots": "lock.open", "Restore Quick Access": "rectangle.stack", "Hide Quick Access": "eye.slash",
+                       "Capture History…": "clock.arrow.circlepath", "Capture Frozen Area…": "snowflake", "Scrolling Capture (Vertical)…": "arrow.down.doc",
+                       "Scrolling Capture (Horizontal)…": "arrow.left.and.right.text.vertical", "Record Area…": "rectangle.dashed.badge.record", "Record Window…": "macwindow.badge.plus",
+                       "Open Image…": "photo", "Settings…": "gearshape", "Keyboard Shortcuts…": "keyboard", "Open Captures Folder": "folder", "Quit LeanShot": "power"]
+        for item in menu.items { item.image = symbols[item.title].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: item.title) } }
         statusItem.menu = menu
         Hotkeys.onChange = { [weak self] in
             for item in self?.statusItem.menu?.items ?? [] {
+                guard item.tag > 0 else { continue }
                 if let shortcut = Hotkeys.display(UInt32(item.tag)) { item.keyEquivalent = shortcut.key; item.keyEquivalentModifierMask = shortcut.flags }
+                else { item.keyEquivalent = "" }
             }
         }
         if #available(macOS 15.0, *) {
@@ -92,10 +114,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.statusItem.button?.title = status ?? ""
                 self.statusItem.button?.image = NSImage(systemSymbolName: status == nil ? "camera.viewfinder" : "record.circle", accessibilityDescription: status == nil ? "LeanShot" : "Recording")
                 self.recordItem?.title = status == nil ? "Record Screen" : "Stop Recording"
+                self.recordItem?.image = NSImage(systemSymbolName: status == nil ? "record.circle" : "stop.circle", accessibilityDescription: self.recordItem?.title)
             }
         }
 
+        // Editor windows make LeanShot a regular app (Dock + ⌘-Tab); it returns to menu-bar only when they close.
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                DispatchQueue.main.async { AppDelegate.updateActivationPolicy() }
+            }
+        }
+        NSApp.mainMenu = AppDelegate.mainMenu()
+        ImageTools.warmUp()
+
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    /// Menu actions without a default shortcut that users may bind: (title, hotkey id).
+    static var extraShortcuts: [(String, UInt32)] = []
+
+    static func updateActivationPolicy() {
+        let documents = NSApp.windows.contains { $0.isVisible && $0.styleMask.contains(.titled) && !($0 is NSPanel) }
+        let policy: NSApplication.ActivationPolicy = documents ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+    }
+
+    /// Shown only while an editor makes the app regular; Edit gives text fields ⌘C/⌘V.
+    private static func mainMenu() -> NSMenu {
+        let main = NSMenu()
+        func add(_ title: String, _ items: [(String, Selector?, String)]) {
+            let menu = NSMenu(title: title)
+            for (name, action, key) in items { if name.isEmpty { menu.addItem(.separator()) } else { menu.addItem(withTitle: name, action: action, keyEquivalent: key) } }
+            main.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = menu
+        }
+        add("LeanShot", [("About LeanShot", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), ("", nil, ""),
+                         ("Settings…", #selector(AppDelegate.settings), ","), ("", nil, ""),
+                         ("Hide LeanShot", #selector(NSApplication.hide(_:)), "h"), ("Quit LeanShot", #selector(NSApplication.terminate(_:)), "q")])
+        add("Edit", [("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
+                     ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")])
+        add("Window", [("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"), ("Close", #selector(NSWindow.performClose(_:)), "w")])
+        return main
     }
 
     @objc func captureArea() { shoot(["-i", "-s"]) }
@@ -127,7 +185,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func captureWindow() { shoot(["-i", "-w"] + (Settings.windowShadow ? [] : ["-o"])) }
     @objc func captureFullscreen() { shoot([]) }
-    @objc func captureAreaTimer() { shoot(["-i", "-s", "-T", "5"]) }
+    /// Select first, then a visible 5…1 countdown, then capture: time to open a menu or hover a button.
+    @objc func captureAreaTimer() {
+        RegionSelector.choose { [weak self] region, _ in
+            guard let region else { return }
+            for n in 0..<5 { DispatchQueue.main.asyncAfter(deadline: .now() + Double(n)) { Toast.show("Capturing in \(5 - n)…", symbol: "timer") } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                let r = region.globalRect
+                self?.shoot(["-R\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"])
+            }
+        }
+    }
     @objc func recordScreen() {
         if #available(macOS 15.0, *) {
             if Recorder.shared.busy { Recorder.shared.stop() }
@@ -182,12 +250,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !text.isEmpty else { return Toast.show("No text found") }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
-                Toast.show("Copied \(text.count) characters")
+                Toast.show("Copied \(text.count) characters", symbol: "text.viewfinder")
             }
         }
     }
 
-    @objc func annotateLast() { if let url = lastCapture { AnnotateWindow.open(url) } }
+    @objc func annotateLast() {
+        guard let url = lastCapture else { return Toast.show("No captures yet") }
+        if Thumbnail.isImage(url) { AnnotateWindow.open(url) } else { VideoEditor.open(url) }
+    }
     @objc func pinLast() { if let url = lastCapture, let image = NSImage(contentsOf: url) { PinWindow.pin(image) } }
     @objc func openFolder() { NSWorkspace.shared.open(Capture.folder) }
     @objc func restoreOverlay() { QuickAccess.restore() }
@@ -203,6 +274,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func shoot(_ args: [String], ext: String = "png", finished: (() -> Void)? = nil) {
+        // Without the grant screencapture silently saves only the wallpaper.
+        guard CGPreflightScreenCaptureAccess() else { Permissions.explain(CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: "Screen Recording permission declined"])); return }
         QuickAccess.hide() // restore older thumbnails once capture finishes
         let started = Capture.run(args + (Settings.captureCursor && ext == "png" ? ["-C"] : []), to: Capture.newURL(ext)) { [weak self] url in
             finished?()
@@ -219,14 +292,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum Hotkeys {
     private struct Binding {
         var code: UInt32; var modifiers: UInt32; var key: String; var ref: EventHotKeyRef?; var id: UInt32
+        var failed = false // another app owns the combination; the menu must not show it as live
+        var unset = false // no shortcut: optional actions start here, and ⌫ in the recorder returns here
     }
+    static let extraBase: UInt32 = 1000
+    /// Stored in place of a key code when the user cleared a shortcut.
+    private static let cleared = UInt32.max
+    static func unavailable(_ defaultCode: UInt32) -> Bool { bindings[defaultCode]?.failed ?? false }
     private static var bindings: [UInt32: Binding] = [:]
     static var onChange: (() -> Void)?
     private static var handlers: [UInt32: () -> Void] = [:]
     private static var installed = false
     private static var suspended = false
 
-    static func register(keyCode: UInt32, modifiers: UInt32, key: String, _ handler: @escaping () -> Void) {
+    static func register(keyCode: UInt32, modifiers: UInt32, key: String, optional: Bool = false, _ handler: @escaping () -> Void) {
         if !installed {
             installed = true
             var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -240,18 +319,21 @@ enum Hotkeys {
         }
         let id = UInt32(handlers.count + 1)
         handlers[id] = handler
-        let code = Settings.defaults.object(forKey: "hotkey.\(keyCode).code") as? UInt32 ?? keyCode
-        let mods = Settings.defaults.object(forKey: "hotkey.\(keyCode).modifiers") as? UInt32 ?? modifiers
-        let character = Settings.defaults.string(forKey: "hotkey.\(keyCode).key") ?? key
+        let stored = Settings.defaults.object(forKey: Settings.hotkeyKey(keyCode, .code)) as? UInt32
+        guard (stored ?? (optional ? cleared : keyCode)) != cleared else {
+            bindings[keyCode] = Binding(code: 0, modifiers: 0, key: "", ref: nil, id: id, unset: true); return
+        }
+        let code = stored ?? keyCode
+        let mods = Settings.defaults.object(forKey: Settings.hotkeyKey(keyCode, .modifiers)) as? UInt32 ?? modifiers
+        let character = Settings.defaults.string(forKey: Settings.hotkeyKey(keyCode, .key)) ?? key
         var binding = Binding(code: code, modifiers: mods, key: character, ref: nil, id: id)
-        let status = activate(&binding); bindings[keyCode] = binding
-        if status != noErr { NSLog("LeanShot: hotkey \(code) unavailable (\(status))") }
+        binding.failed = activate(&binding) != noErr; bindings[keyCode] = binding
     }
     private static func activate(_ binding: inout Binding) -> OSStatus {
         RegisterEventHotKey(binding.code, binding.modifiers, EventHotKeyID(signature: OSType(0x4C53_4854), id: binding.id), GetApplicationEventTarget(), 0, &binding.ref)
     }
     static func display(_ defaultCode: UInt32) -> (key: String, flags: NSEvent.ModifierFlags)? {
-        guard let binding = bindings[defaultCode] else { return nil }
+        guard let binding = bindings[defaultCode], !binding.failed, !binding.unset else { return nil }
         var flags = NSEvent.ModifierFlags()
         for (carbon, cocoa) in [(cmdKey, NSEvent.ModifierFlags.command), (controlKey, .control), (optionKey, .option), (shiftKey, .shift)] {
             if binding.modifiers & UInt32(carbon) != 0 { flags.insert(cocoa) }
@@ -259,6 +341,7 @@ enum Hotkeys {
         return (binding.key, flags)
     }
     static func label(_ defaultCode: UInt32) -> String {
+        if bindings[defaultCode]?.unset == true { return "None" }
         guard let value = display(defaultCode) else { return "Unavailable" }
         let f = value.flags
         return (f.contains(.control) ? "⌃" : "") + (f.contains(.option) ? "⌥" : "") + (f.contains(.shift) ? "⇧" : "") + (f.contains(.command) ? "⌘" : "") + (value.key == " " ? "Space" : value.key.uppercased())
@@ -268,8 +351,14 @@ enum Hotkeys {
         for code in Array(bindings.keys) { if let ref = bindings[code]?.ref { UnregisterEventHotKey(ref); bindings[code]?.ref = nil } }
     }
     static func resume() {
-        for code in Array(bindings.keys) { if var binding = bindings[code], binding.ref == nil { _ = activate(&binding); bindings[code] = binding } }
+        for code in Array(bindings.keys) { if var binding = bindings[code], binding.ref == nil, !binding.unset { binding.failed = activate(&binding) != noErr; bindings[code] = binding } }
         suspended = false
+    }
+    static func clear(_ defaultCode: UInt32) {
+        guard var binding = bindings[defaultCode] else { return }
+        if let ref = binding.ref { UnregisterEventHotKey(ref) }
+        binding.ref = nil; binding.unset = true; binding.failed = false; bindings[defaultCode] = binding
+        Settings.defaults.set(cleared, forKey: Settings.hotkeyKey(defaultCode, .code)); onChange?()
     }
     static func rebind(_ defaultCode: UInt32, event: NSEvent) -> Bool {
         guard var original = bindings[defaultCode], let key = event.charactersIgnoringModifiers, !key.isEmpty else { return false }
@@ -279,17 +368,18 @@ enum Hotkeys {
             if f.contains(cocoa) { modifiers |= UInt32(carbon) }
         }
         guard modifiers & UInt32(cmdKey | controlKey | optionKey) != 0 else { return false }
-        if bindings.contains(where: { $0.key != defaultCode && $0.value.code == UInt32(event.keyCode) && $0.value.modifiers == modifiers }) { Toast.show("Another LeanShot action already uses that shortcut"); return false }
+        if bindings.contains(where: { $0.key != defaultCode && !$0.value.unset && $0.value.code == UInt32(event.keyCode) && $0.value.modifiers == modifiers }) { Toast.show("Another LeanShot action already uses that shortcut"); return false }
         let wasRegistered = original.ref != nil
         if let ref = original.ref { UnregisterEventHotKey(ref); original.ref = nil }
         var updated = Binding(code: UInt32(event.keyCode), modifiers: modifiers, key: key.lowercased(), ref: nil, id: original.id)
         guard activate(&updated) == noErr else { if wasRegistered { _ = activate(&original) }; bindings[defaultCode] = original; Toast.show("That shortcut is already in use"); return false }
         bindings[defaultCode] = updated
-        Settings.defaults.set(updated.code, forKey: "hotkey.\(defaultCode).code"); Settings.defaults.set(updated.modifiers, forKey: "hotkey.\(defaultCode).modifiers"); Settings.defaults.set(updated.key, forKey: "hotkey.\(defaultCode).key")
+        Settings.defaults.set(updated.code, forKey: Settings.hotkeyKey(defaultCode, .code)); Settings.defaults.set(updated.modifiers, forKey: Settings.hotkeyKey(defaultCode, .modifiers)); Settings.defaults.set(updated.key, forKey: Settings.hotkeyKey(defaultCode, .key))
         onChange?(); return true
     }
 }
 
+if CommandLine.arguments.contains("--bench") { Bench.run() }
 if CommandLine.arguments.contains("--selftest") {
     do { try EditorTests.run() } catch { fatalError("Regression tests: \(error)") }
     var videoTestsFinished = false
@@ -311,6 +401,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--overlay-preview"), CommandLin
 if let i = CommandLine.arguments.firstIndex(of: "--preview"), CommandLine.arguments.count > i + 2 {
     app.setActivationPolicy(.accessory)
     AnnotateWindow.preview(URL(fileURLWithPath: CommandLine.arguments[i + 1]), to: URL(fileURLWithPath: CommandLine.arguments[i + 2]))
+    app.run()
+}
+if let i = CommandLine.arguments.firstIndex(of: "--settings-preview"), CommandLine.arguments.count > i + 2 {
+    app.setActivationPolicy(.accessory)
+    SettingsWindow.preview(tab: Int(CommandLine.arguments[i + 1]) ?? 0, to: URL(fileURLWithPath: CommandLine.arguments[i + 2]))
     app.run()
 }
 let delegate = AppDelegate()

@@ -24,14 +24,20 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
     private let cursorStyle = NSPopUpButton()
     private let cursorSize = NSPopUpButton()
     private let smoothCursor = NSButton(checkboxWithTitle: "Smooth cursor", target: nil, action: nil)
+    /// Seconds in the user's locale ("1,50" in es-GT); parsing also accepts a dot.
+    private static let seconds: NumberFormatter = { let f = NumberFormatter(); f.numberStyle = .decimal; f.minimumFractionDigits = 2; f.maximumFractionDigits = 2; return f }()
+    private static func parse(_ text: String) -> Double? {
+        seconds.number(from: text)?.doubleValue ?? Double(text.replacingOccurrences(of: ",", with: "."))
+    }
 
     static func open(_ url: URL) {
         let w = VideoEditor(url: url); windows.append(w)
-        if let screen = NSScreen.main?.visibleFrame {
+        if let screen = NSScreen.underPointer?.visibleFrame {
             w.minSize = NSSize(width: min(760, screen.width * 0.9), height: min(620, screen.height * 0.85))
             w.setContentSize(NSSize(width: min(960, screen.width * 0.9), height: min(740, screen.height * 0.85)))
         }
-        w.center(); NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
+        if !w.setFrameUsingName("VideoEditor") { w.centerOnPointerScreen() }; w.setFrameAutosaveName("VideoEditor")
+        NSApp.activate(ignoringOtherApps: true); w.makeKeyAndOrderFront(nil)
     }
     private init(url: URL) {
         self.url = url
@@ -43,8 +49,15 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
         playerView.autoresizingMask = [.width, .height]; playerView.player = AVPlayer(url: url); playerView.controlsStyle = .floating
         content.addSubview(playerView)
         let row = NSStackView(frame: NSRect(x: 20, y: 204, width: 920, height: 32)); row.spacing = 12; row.autoresizingMask = [.width]
-        row.addArrangedSubview(NSTextField(labelWithString: "Trim from (s)")); startField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(startField)
-        row.addArrangedSubview(NSTextField(labelWithString: "to")); endField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(endField)
+        // "Set" takes the playhead, so trimming is scrub-then-click instead of reading times off the player.
+        func playheadButton(_ field: NSTextField) -> NSButton {
+            let b = ClosureButton(frame: .zero) { [weak self] in
+                if let t = self?.playerView.player?.currentTime().seconds, t.isFinite { field.stringValue = Self.seconds.string(from: NSNumber(value: t)) ?? "\(t)" }
+            }
+            b.title = "Set"; b.bezelStyle = .rounded; b.toolTip = "Use the playhead position"; return b
+        }
+        row.addArrangedSubview(NSTextField(labelWithString: "Trim from (s)")); startField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(startField); row.addArrangedSubview(playheadButton(startField))
+        row.addArrangedSubview(NSTextField(labelWithString: "to")); endField.widthAnchor.constraint(equalToConstant: 70).isActive = true; row.addArrangedSubview(endField); row.addArrangedSubview(playheadButton(endField))
         speed.addItems(withTitles: ["0.5×", "1×", "1.5×", "2×"]); speed.selectItem(at: 1); row.addArrangedSubview(speed)
         row.addArrangedSubview(mute); content.addSubview(row)
         let style = NSStackView(frame: NSRect(x: 20, y: 158, width: 920, height: 32)); style.spacing = 12; style.autoresizingMask = [.width]
@@ -73,7 +86,7 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
             do {
                 duration = try await AVURLAsset(url: url).load(.duration).seconds
                 guard duration.isFinite, duration > 0 else { throw CocoaError(.fileReadCorruptFile) }
-                endField.stringValue = String(format: "%.2f", duration); progress.stringValue = String(format: "%.1f seconds · Original capture stays intact", duration)
+                endField.stringValue = Self.seconds.string(from: NSNumber(value: duration)) ?? "\(duration)"; progress.stringValue = String(format: "%.1f seconds · Original capture stays intact", duration)
             } catch { progress.stringValue = error.localizedDescription }
         }
     }
@@ -81,7 +94,7 @@ final class VideoEditor: NSWindow, NSWindowDelegate {
 
     private func export(gif: Bool) {
         guard !exporting else { return NSSound.beep() }
-        guard let start = Double(startField.stringValue), let end = Double(endField.stringValue), start.isFinite, end.isFinite, start >= 0, end > start, end <= duration + 0.02 else {
+        guard let start = Self.parse(startField.stringValue), let end = Self.parse(endField.stringValue), start.isFinite, end.isFinite, start >= 0, end > start, end <= duration + 0.02 else {
             Toast.show("Choose valid start and end times within the recording"); return
         }
         let p = NSSavePanel(); p.allowedContentTypes = [gif ? .gif : .mpeg4Movie]
