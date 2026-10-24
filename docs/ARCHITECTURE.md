@@ -98,6 +98,7 @@ Run the preview flags from the app bundle binary, because `.build/release/LeanSh
 - `Canvas.remembersChoices` is off by default, so tests don't write the user's editor preferences. `AnnotateWindow` turns it on through `restoreChoices()`.
 - Tests that need a pasteboard use a private named pasteboard, never `NSPasteboard.general`.
 - The end-to-end suite (`E2ETests.swift`) runs in a process that can't become the active app, so AppKit would spend each first click on activating the window. The driver hands mouse events to the view that `hitTest` finds, which is what `NSWindow.sendEvent` does for a key window. Key events go through `performKeyEquivalent` first and then the window, like `NSApplication.sendEvent`.
+- The e2e process swizzles NSWindow ordering and alpha and NSApplication activation, so every window stays transparent and click-through and the app never takes focus. You can keep working while the suite runs, locally or on CI.
 - `--e2e` switches `Settings.defaults` to the `com.danisnowman.leanshot.e2e` domain and `Clipboard.pasteboard` to a private pasteboard, and every case gets fresh temporary folders. Done on a capture in the captures folder still moves the original to the real Trash, and the tests delete it from there.
 - Each e2e case title starts with its technique ID (`DT-R1`, `ST-T4`, `EP-07`, `AC-02`, `BVA-03`, `EG-01`), and the test report links each ID to its line.
 

@@ -361,10 +361,29 @@ enum E2ETests {
         return (source.components(separatedBy: "\n").firstIndex { $0.contains("(\"\(id)\"") } ?? 0) + 1
     }
 
+    // MARK: Invisible windows
+
+    /// Tests run while the user keeps working: every LeanShot window stays fully transparent and click-through,
+    /// and the app never activates itself, so nothing appears on screen and focus never moves.
+    /// Swizzles NSWindow's alpha and ordering methods and NSApplication's activation for the e2e process only.
+    private static func makeWindowsInvisible() {
+        func swap(_ cls: AnyClass, _ original: Selector, _ replacement: Selector) {
+            guard let a = class_getInstanceMethod(cls, original), let b = class_getInstanceMethod(cls, replacement) else { return }
+            method_exchangeImplementations(a, b)
+        }
+        swap(NSWindow.self, #selector(setter: NSWindow.alphaValue), #selector(NSWindow.e2e_setAlphaValue(_:)))
+        swap(NSWindow.self, #selector(NSWindow.orderFront(_:)), #selector(NSWindow.e2e_orderFront(_:)))
+        swap(NSWindow.self, #selector(NSWindow.makeKeyAndOrderFront(_:)), #selector(NSWindow.e2e_makeKeyAndOrderFront(_:)))
+        swap(NSWindow.self, #selector(NSWindow.orderFrontRegardless), #selector(NSWindow.e2e_orderFrontRegardless))
+        swap(NSWindow.self, #selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.e2e_order(_:relativeTo:)))
+        swap(NSApplication.self, #selector(NSApplication.activate(ignoringOtherApps:)), #selector(NSApplication.e2e_activate(ignoringOtherApps:)))
+    }
+
     // MARK: Runner
 
     static func run(junit: URL) {
         setvbuf(stdout, nil, _IONBF, 0) // keep results visible even if a case crashes the process
+        makeWindowsInvisible()
         NSApp.setActivationPolicy(.accessory); NSApp.finishLaunching()
         Clipboard.pasteboard = NSPasteboard(name: NSPasteboard.Name("LeanShot-e2e-\(UUID().uuidString)"))
         define()
@@ -394,4 +413,17 @@ enum E2ETests {
         print("\(results.count - failed) of \(results.count) e2e tests passed; JUnit at \(junit.path)")
         exit(failed == 0 ? 0 : 1)
     }
+}
+
+// After the swap, calling e2e_* runs AppKit's original implementation.
+extension NSWindow {
+    @objc func e2e_setAlphaValue(_ value: CGFloat) { e2e_setAlphaValue(0) }
+    private func hide() { e2e_setAlphaValue(0); ignoresMouseEvents = true }
+    @objc func e2e_orderFront(_ sender: Any?) { hide(); e2e_orderFront(sender) }
+    @objc func e2e_makeKeyAndOrderFront(_ sender: Any?) { hide(); e2e_makeKeyAndOrderFront(sender) }
+    @objc func e2e_orderFrontRegardless() { hide(); e2e_orderFrontRegardless() }
+    @objc func e2e_order(_ place: NSWindow.OrderingMode, relativeTo other: Int) { if place != .out { hide() }; e2e_order(place, relativeTo: other) }
+}
+extension NSApplication {
+    @objc func e2e_activate(ignoringOtherApps flag: Bool) {}
 }

@@ -146,7 +146,9 @@ enum Glass {
         let glass = NSGlassEffectView(frame: content.frame)
         glass.cornerRadius = radius
         glass.autoresizingMask = content.autoresizingMask
+        #if compiler(>=6.4) // effectIsInteractive ships in the macOS 27 SDK; CI builds with the macOS 26 SDK
         if #available(macOS 27, *) { glass.effectIsInteractive = interactive }
+        #endif
         content.frame.origin = .zero
         content.autoresizingMask = [.width, .height]
         glass.contentView = content
