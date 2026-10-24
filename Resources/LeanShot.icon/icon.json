@@ -1,28 +1,66 @@
 {
-  "fill" : {
-    "automatic-gradient" : "extended-srgb:0.97000,0.97000,0.98000,1.00000"
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.10000,0.12000,0.17000,1.00000"
   },
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
-        { "glass" : true, "image-name" : "aperture.svg", "name" : "aperture" },
-        { "glass" : true, "image-name" : "lens.svg", "name" : "lens" }
+      "layers": [
+        {
+          "image-name": "cross.svg",
+          "name": "cross",
+          "glass": true
+        }
       ],
-      "lighting" : "combined",
-      "shadow" : { "kind" : "neutral", "opacity" : 0.6 },
-      "specular" : true,
-      "translucency" : { "enabled" : false, "value" : 0 }
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.1
+      }
     },
     {
-      "layers" : [
-        { "glass" : true, "image-name" : "photo.svg", "name" : "photo" }
+      "layers": [
+        {
+          "image-name": "glass.svg",
+          "name": "glass",
+          "glass": true
+        }
       ],
-      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
-      "specular" : true,
-      "translucency" : { "enabled" : true, "value" : 0.15 }
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.4
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "ring.svg",
+          "name": "ring",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.7
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
     }
   ],
-  "supported-platforms" : {
-    "squares" : [ "macOS" ]
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
   }
 }

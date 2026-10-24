@@ -10,7 +10,7 @@ LeanShot lives in the menu bar and captures an area, a window, the full screen o
 
 ## Install
 
-Download `LeanShot-0.3.1.dmg` from the [latest release](https://github.com/danihrndzld/LeanShot/releases/latest), open it, and drag LeanShot to Applications.
+Download `LeanShot-0.3.2.dmg` from the [latest release](https://github.com/danihrndzld/LeanShot/releases/latest), open it, and drag LeanShot to Applications.
 
 The app is signed with an Apple Development certificate, but it is not notarized, so macOS blocks the first launch. To open it, right-click LeanShot in Applications and choose Open, then confirm. If macOS still refuses, run the following command once:
 
