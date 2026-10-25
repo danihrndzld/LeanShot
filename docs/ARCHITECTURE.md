@@ -79,6 +79,7 @@ These choices come from measurements with `--bench` on a 3024 by 1964 pixel capt
 | `scripts/make_icon.sh` | Compiles `Resources/LeanShot.icon` into `Resources/Assets.car` and `LeanShot.icns` |
 | `.build/release/LeanShot --selftest` | Runs the regression tests and exits with 0 when they pass |
 | `.build/release/LeanShot --bench` | Prints timings for the slow paths |
+| `scripts/e2e.sh [dir]` | Runs the end-to-end suite (`--e2e`) on a coverage build and writes `junit.xml` and `coverage.json` |
 | `build/LeanShot.app/Contents/MacOS/LeanShot --preview in.png out.png [--background]` | Opens the editor on `in.png` and saves a picture of the window |
 | `... --overlay-preview in.png out.png` | Saves a picture of two Quick Access cards, the right one hovered |
 | `... --settings-preview <tab> out.png` | Saves a picture of a Settings tab |
@@ -96,6 +97,10 @@ Run the preview flags from the app bundle binary, because `.build/release/LeanSh
 - Quick Access panels, toasts and other overlay windows set `sharingType = .none`, so they never appear in captures. The overlay preview switches the cards to `.readOnly` to photograph them.
 - `Canvas.remembersChoices` is off by default, so tests don't write the user's editor preferences. `AnnotateWindow` turns it on through `restoreChoices()`.
 - Tests that need a pasteboard use a private named pasteboard, never `NSPasteboard.general`.
+- The end-to-end suite (`E2ETests.swift`) runs in a process that can't become the active app, so AppKit would spend each first click on activating the window. The driver hands mouse events to the view that `hitTest` finds, which is what `NSWindow.sendEvent` does for a key window. Key events go through `performKeyEquivalent` first and then the window, like `NSApplication.sendEvent`.
+- The e2e process swizzles NSWindow ordering and alpha and NSApplication activation, so every window stays transparent and click-through and the app never takes focus. You can keep working while the suite runs, locally or on CI.
+- `--e2e` switches `Settings.defaults` to the `com.danisnowman.leanshot.e2e` domain and `Clipboard.pasteboard` to a private pasteboard, and every case gets fresh temporary folders. Done on a capture in the captures folder still moves the original to the real Trash, and the tests delete it from there.
+- Each e2e case title starts with its technique ID (`DT-R1`, `ST-T4`, `EP-07`, `AC-02`, `BVA-03`, `EG-01`), and the test report links each ID to its line.
 
 ## How changes are made here
 

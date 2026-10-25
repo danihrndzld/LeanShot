@@ -42,13 +42,16 @@ enum Capture {
 }
 
 enum Clipboard {
+    /// The general pasteboard, swapped for a private one by `--e2e` so tests never touch the user's clipboard.
+    static var pasteboard: NSPasteboard = .general
     static func copy(_ url: URL) {
-        guard let image = NSImage(contentsOf: url) else { NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([url as NSURL]); return }
+        guard let image = NSImage(contentsOf: url) else { pasteboard.clearContents(); pasteboard.writeObjects([url as NSURL]); return }
         copy(image, png: url.pathExtension.lowercased() == "png" ? try? Data(contentsOf: url) : nil)
     }
 
     /// PNG for browsers and design tools (Figma, Notion, Linear), TIFF for older Cocoa apps. Pass `png` when it is already encoded.
-    static func copy(_ image: NSImage, png: Data? = nil, to pasteboard: NSPasteboard = .general) {
+    static func copy(_ image: NSImage, png: Data? = nil, to target: NSPasteboard? = nil) {
+        let pasteboard = target ?? Self.pasteboard
         let item = NSPasteboardItem()
         // Encoded only when an app actually pastes, so Copy stays instant on a 6 MP capture.
         provider = LazyImage(image: image, png: png)
@@ -143,7 +146,9 @@ enum Glass {
         let glass = NSGlassEffectView(frame: content.frame)
         glass.cornerRadius = radius
         glass.autoresizingMask = content.autoresizingMask
+        #if compiler(>=6.4) // effectIsInteractive ships in the macOS 27 SDK; CI builds with the macOS 26 SDK
         if #available(macOS 27, *) { glass.effectIsInteractive = interactive }
+        #endif
         content.frame.origin = .zero
         content.autoresizingMask = [.width, .height]
         glass.contentView = content

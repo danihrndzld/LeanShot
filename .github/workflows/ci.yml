@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      # Optional: set MAIL_USERNAME and MAIL_PASSWORD (a Gmail app password) as repository secrets to get failure emails.
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          echo "SDK $(xcrun --show-sdk-version)"
+
+      - name: Self-test (unit and integration)
+        run: |
+          swift build -c release
+          .build/release/LeanShot --selftest
+
+      - name: End-to-end tests
+        run: scripts/e2e.sh build/e2e
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-results
+          path: |
+            build/e2e/junit.xml
+            build/e2e/coverage.json
+          if-no-files-found: warn
+
+      - name: Email the failure report
+        if: failure() && env.MAIL_USERNAME != ''
+        uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: LeanShot CI <${{ secrets.MAIL_USERNAME }}>
+          to: danisnowman@gmail.com
+          subject: "LeanShot CI failed: ${{ github.workflow }} on ${{ github.ref_name }}"
+          body: |
+            The LeanShot CI run failed for commit ${{ github.sha }} on ${{ github.ref_name }}.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            The JUnit results are attached when the end-to-end step produced them.
+          attachments: build/e2e/junit.xml

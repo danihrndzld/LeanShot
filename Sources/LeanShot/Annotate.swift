@@ -587,11 +587,11 @@ final class Canvas: NSView, NSTextFieldDelegate {
             return true
         }
         Clipboard.copy(picture)
-        Canvas.copied = (m, NSPasteboard.general.changeCount)
+        Canvas.copied = (m, Clipboard.pasteboard.changeCount)
         return true
     }
     func pasteMark() -> Bool {
-        guard var copy = Canvas.copied, copy.change == NSPasteboard.general.changeCount else { return false }
+        guard var copy = Canvas.copied, copy.change == Clipboard.pasteboard.changeCount else { return false }
         copy.mark.move(by: 12, -12); Canvas.copied = copy
         add(copy.mark); return true
     }
@@ -945,7 +945,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         image.isTemplate = true; return image
     }
 
-    private var canvas: Canvas!
+    private(set) var canvas: Canvas! // read by the e2e driver
     private var backdrop: Backdrop!
     private let inspector = BackgroundInspector()
     private var sidebar: NSSplitViewItem!
@@ -1140,7 +1140,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         case .background: toggleBackground()
         case .undo: canvas.undo()
         case .redo: canvas.redo()
-        case .paste: if !canvas.pasteMark(), let image = NSImage(pasteboard: .general) { canvas.insertImage(image) }
+        case .paste: if !canvas.pasteMark(), let image = NSImage(pasteboard: Clipboard.pasteboard) { canvas.insertImage(image) }
         case .close: performClose(nil)
         case .zoomIn: setZoom(scroll.magnification * 1.25)
         case .zoomOut: setZoom(scroll.magnification / 1.25)
