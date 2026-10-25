@@ -123,7 +123,7 @@ swift run -c release LeanShot --selftest
 swift run -c release LeanShot --bench
 ```
 
-The self-test runs 15 regression tests. They cover cropping and rotation at Retina resolution, undo and redo, editable projects, the four redaction styles, backgrounds, history filtering, scrolling capture, video export and OCR. The self-test also checks that no two shortcuts collide, and that copies and exports produce valid PNG, JPEG and HEIC data.
+The self-test runs 69 regression tests in about 3 seconds, and each test checks one behavior. They cover cropping and rotation at Retina resolution, undo and redo, editable projects, the four redaction styles, backgrounds, history filtering, scrolling capture, video export and OCR. The self-test also checks that no two shortcuts collide, and that copies and exports produce valid PNG, JPEG and HEIC data.
 
 The end-to-end tests open the real editor through the same entry point Finder uses, then send real mouse and key events to the editor window. They check what a user would see, e.g., the saved file, its pixels, the clipboard, the Trash and the save or discard sheet. Run them with `scripts/e2e.sh`, which also measures code coverage. GitHub Actions runs the self-test and the end-to-end tests on every push and pull request.
 

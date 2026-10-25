@@ -3,7 +3,7 @@ import AppKit
 /// `LeanShot --e2e <junit.xml>`: end-to-end tests that drive the real editor the way a user does.
 /// Files open through `AppDelegate.application(_:open:)` (the Finder entry point), input arrives as real mouse and
 /// key NSEvents sent to the window, and checks read what a user sees: files on disk, the pasteboard, windows and sheets.
-/// Isolation: a throwaway UserDefaults domain (`Settings.e2eSuite`), a private pasteboard and temporary folders.
+/// Isolation: a throwaway UserDefaults domain (`Settings.testSuite`), a private pasteboard and temporary folders.
 /// Out of reach at this level: screencapture/ScreenCaptureKit (Screen Recording permission), Carbon global hotkeys,
 /// hover tracking areas and the out-of-process Save panel.
 enum E2ETests {
@@ -108,7 +108,7 @@ enum E2ETests {
         for w in NSApp.windows { if let a = w as? AnnotateWindow, a.isVisible { a.isDocumentEdited = false; a.attachedSheet.map { a.endSheet($0) }; a.close() } }
         NSApp.windows.filter { $0 is PinWindow && $0.isVisible }.forEach { $0.orderOut(nil) }
         QuickAccess.hide()
-        UserDefaults().removePersistentDomain(forName: Settings.e2eSuite)
+        UserDefaults().removePersistentDomain(forName: Settings.testSuite)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("leanshot-e2e-\(UUID().uuidString.prefix(8))")
         captures = root.appendingPathComponent("Captures", isDirectory: true); outside = root.appendingPathComponent("Downloads", isDirectory: true)
         for f in [captures!, outside!] { try? FileManager.default.createDirectory(at: f, withIntermediateDirectories: true) }
@@ -397,7 +397,7 @@ enum E2ETests {
             print("\(failure == nil ? "PASS" : "FAIL") \(c.title)\(failure.map { ": \($0)" } ?? "")")
         }
         reset()
-        UserDefaults().removePersistentDomain(forName: Settings.e2eSuite)
+        UserDefaults().removePersistentDomain(forName: Settings.testSuite)
         Clipboard.pasteboard.releaseGlobally()
         let failed = results.filter { $0.2 != nil }.count
         func esc(_ s: String) -> String { s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: "\"", with: "&quot;") }

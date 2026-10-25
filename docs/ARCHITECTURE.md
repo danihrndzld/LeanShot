@@ -93,7 +93,8 @@ Run the preview flags from the app bundle binary, because `.build/release/LeanSh
 - Inactive windows on macOS 26 and 27 draw sidebars and glass flat, so previews of inactive windows don't show the final look. `screencapture -l` also fails while the screen is locked, and the preview flags then fall back to `cacheDisplay`.
 - `NSColor.red` converted to sRGB has a green component of 0.149, so tests compare against the fixture's own pixels instead of pure red.
 - `CIPixellate` samples the center pixel of each block instead of averaging it.
-- A failed `precondition` in the release build exits with code 133 and loses buffered output. Run the debug build, `swift build && .build/debug/LeanShot --selftest`, to see the failing line.
+- A failed check in `--selftest` records its message and `file:line`, the run continues, and the process exits 1 after printing `FAIL <test name>`. The self-test uses the same throwaway defaults domain as `--e2e` (`Settings.testSuite`), so the editor choices it changes never reach the user's settings.
+- Each `test("…")` in `EditorTests.run()` has one Act line and asserts one exit point. Expected values come from the README or a comment next to the test, never from the code under test. Swift `assert` is compiled out of release builds, so tests use the `check*` helpers.
 - Quick Access panels, toasts and other overlay windows set `sharingType = .none`, so they never appear in captures. The overlay preview switches the cards to `.readOnly` to photograph them.
 - `Canvas.remembersChoices` is off by default, so tests don't write the user's editor preferences. `AnnotateWindow` turns it on through `restoreChoices()`.
 - Tests that need a pasteboard use a private named pasteboard, never `NSPasteboard.general`.
@@ -104,6 +105,6 @@ Run the preview flags from the app bundle binary, because `.build/release/LeanSh
 
 ## How changes are made here
 
-Changes are small and follow the existing style. Prefer a short diff that reuses a helper in the codebase over a new abstraction, and mark a deliberate shortcut with a comment that names its limit. Every non-trivial logic change adds one check to `EditorTests.run()`. Run `--selftest` and, for visual changes, a preview before you report a change as done.
+Changes are small and follow the existing style. Prefer a short diff that reuses a helper in the codebase over a new abstraction, and mark a deliberate shortcut with a comment that names its limit. Every non-trivial logic change adds one named test to `EditorTests.run()`. Run `--selftest` and, for visual changes, a preview before you report a change as done.
 
 Commits use the author `Daniel Hernández <danisnowman@gmail.com>` and never include an AI co-author line. Commit only when the user asks.
