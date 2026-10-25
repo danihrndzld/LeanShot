@@ -39,7 +39,7 @@ In the editor, `AnnotateWindow` owns a `Canvas` inside a `Backdrop`. The window 
 
 `Tool` is an `Int` enum, and its raw values are stored in `.leanshot` files, so new cases go at the end. `Tool.traits` returns a `ToolTraits` value from a `switch` with no `default`, so a new tool doesn't compile until it states its symbol, label, key, handle kind, shadow and number of styles. Code that differs per tool should read `tool.traits` or switch over every case explicitly. Do not add `default:` to a `switch` on `Tool`.
 
-`Mark.style` stores the arrow style, the text style or the redaction style as an `Int`. `Mark.init(from:)` validates the style range only for tools whose `traits.styles` is above zero, because older files stored the arrow style on every shape.
+`Mark.style` stores the arrow style, the text style or the redaction style as an `Int`. `Tool.arrowStyles` and `Tool.textStyles` list them in menu order with their raw values, and new styles go at the end. A text mark keeps its font size in points in `width`; `.leanshot` version 1 stored a stroke width there, and `ShotProject.read` converts it. `Mark.init(from:)` validates the style range only for tools whose `traits.styles` is above zero, because older files stored the arrow style on every shape.
 
 ### Undo is a Memento
 

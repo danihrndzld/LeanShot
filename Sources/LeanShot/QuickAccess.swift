@@ -47,14 +47,14 @@ enum QuickAccess {
         } else { layout() }
     }
     /// `dx` sends the card off in a swipe's direction; nil slides it back toward its screen edge.
-    static func close(_ card: OverlayCard, dx: CGFloat? = nil) {
+    static func close(_ card: OverlayCard, dx: CGFloat? = nil, duration: TimeInterval = 0.2) {
         recentlyClosed.removeAll { $0 == card.url }; recentlyClosed.insert(card.url, at: 0)
         recentlyClosed = Array(recentlyClosed.prefix(8))
         cards.removeAll { $0 === card }; layout()
         let panel = card.panel
         guard panel.isVisible, !Anim.reduced else { panel.orderOut(nil); panel.contentView = nil; return }
         // Slide back toward the edge it came from; the card stays alive until the panel lets go.
-        Anim.run(0.2, {
+        Anim.run(duration, {
             panel.animator().alphaValue = 0
             panel.animator().setFrame(panel.frame.offsetBy(dx: dx ?? edgeOffset(panel), dy: 0), display: false)
         }) { panel.orderOut(nil); panel.contentView = nil }
@@ -73,7 +73,7 @@ enum QuickAccess {
     private static func scheduleClose(_ card: OverlayCard, after seconds: Double) {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak card] in
             guard let card, cards.contains(where: { $0 === card }) else { return }
-            if card.isHovered || card.isDragging || card.menuIsOpen || hidden { scheduleClose(card, after: 1) }
+            if card.isHovered || card.isDragging || card.isSwiping || card.menuIsOpen || hidden { scheduleClose(card, after: 1) }
             else { close(card) }
         }
     }
@@ -225,20 +225,45 @@ final class OverlayCard: NSView, NSMenuDelegate, QLPreviewPanelDataSource {
     }
     override func mouseEntered(with event: NSEvent) { setHovered(true) }
     override func mouseExited(with event: NSEvent) { if !isDragging { setHovered(false) } }
-    override func swipe(with event: NSEvent) { if abs(event.deltaX) > 0 { QuickAccess.close(self) } }
-    /// Two-finger horizontal swipe: the card follows the fingers and flies off past 60 pt, otherwise springs back.
-    private var swipe: (home: NSRect, dx: CGFloat)?
+    /// Two-finger horizontal swipe: the card follows the fingers, and a flick or a drag past 60 pt throws it off at the
+    /// fingers' speed; otherwise it springs back. The axis locks on the first moving event, because `.began` carries no deltas.
+    private var swipe: (home: NSRect, dx: CGFloat, velocity: CGFloat, time: TimeInterval, horizontal: Bool?)?
+    var isSwiping: Bool { swipe != nil } // auto-close waits, so it never animates the panel under the fingers
     override func scrollWheel(with event: NSEvent) {
-        guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return }
-        if event.phase == .began, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) { swipe = (panel.frame, 0) }
+        guard event.hasPreciseScrollingDeltas, event.momentumPhase.isEmpty else { return } // .ended already decided the throw
+        if event.phase == .began { swipe = (panel.frame, 0, 0, event.timestamp, nil); return }
         guard var s = swipe else { return }
-        s.dx += event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        let delta = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        if s.horizontal == nil, delta != 0 || event.scrollingDeltaY != 0 {
+            s.horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            if s.horizontal == false { swipe = nil; return }
+        }
+        if delta != 0 {
+            let dt = max(0.004, event.timestamp - s.time)
+            s.velocity = s.velocity * 0.4 + delta / dt * 0.6; s.time = event.timestamp
+        }
+        s.dx += delta
         swipe = s
-        if event.phase == .changed { panel.setFrameOrigin(s.home.origin.applying(.init(translationX: s.dx, y: 0))); panel.alphaValue = max(0.3, 1 - abs(s.dx) / 300) }
+        if event.phase == .changed, s.horizontal == true {
+            panel.setFrameOrigin(s.home.origin.applying(.init(translationX: s.dx, y: 0))); panel.alphaValue = max(0.3, 1 - abs(s.dx) / 300)
+        }
         guard event.phase == .ended || event.phase == .cancelled else { return }
         swipe = nil
-        if event.phase == .ended, abs(s.dx) > 60 { QuickAccess.close(self, dx: (s.dx > 0 ? 1 : -1) * (s.home.width + 40)) }
-        else { Anim.run(0.25) { panel.animator().setFrame(s.home, display: true); panel.animator().alphaValue = 1 } }
+        guard s.horizontal == true else { return }
+        // A finger resting before lift-off leaves a stale velocity; only a recent one counts as a flick.
+        let velocity = event.timestamp - s.time < 0.05 ? s.velocity : 0
+        if event.phase == .ended, let direction = OverlayCard.throwDirection(dx: s.dx, velocity: velocity) {
+            let distance = s.home.width + 40 - abs(s.dx)
+            // Anim.easeOut starts at about 4.5x its average speed, so this duration hands off at the fingers' speed.
+            let duration = min(0.35, max(0.14, 4.5 * distance / max(1, abs(velocity))))
+            QuickAccess.close(self, dx: direction * distance, duration: duration)
+        } else { Anim.run(0.3) { panel.animator().setFrame(s.home, display: true); panel.animator().alphaValue = 1 } }
+    }
+    /// Which way a released swipe throws the card: -1 or 1, or nil to spring back. A flick above 500 pt/s throws in
+    /// its own direction even when short; a slow drag throws once it passes 60 pt.
+    static func throwDirection(dx: CGFloat, velocity: CGFloat) -> CGFloat? {
+        if abs(velocity) > 500 { return velocity > 0 ? 1 : -1 }
+        return abs(dx) > 60 ? (dx > 0 ? 1 : -1) : nil
     }
     fileprivate func setHovered(_ value: Bool) {
         isHovered = value
