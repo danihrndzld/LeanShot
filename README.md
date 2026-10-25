@@ -45,7 +45,7 @@ The menu also has these capture modes:
 
 ## Quick Access cards
 
-After a capture, LeanShot shows a card in the corner of the screen where you work. When you hover over the card, the image blurs and shows Copy, Save, Pin, Annotate and Share, so the buttons are readable on any screenshot. You can drag the card into another app, and you can dismiss it with a two-finger swipe to the left or right.
+After a capture, LeanShot shows a card in the corner of the screen where you work. When you hover over the card, the image blurs and shows Copy, Save, Pin, Annotate and Share, so the buttons are readable on any screenshot. You can drag the card into another app, and you can dismiss it with a two-finger swipe to the left or right. A quick flick throws the card off even when it moved only a little.
 
 Copy puts both PNG and TIFF on the clipboard. Browser apps such as Figma, Notion and Linear read the PNG, and older Mac apps read the TIFF.
 
@@ -61,6 +61,12 @@ Double-click a card, or choose Annotate Last Capture, to open the editor. The to
 | `M` `C` `H` `K` | Highlighter, numbered counter, spotlight, crop |
 
 Every new shape stays selected, so you can move it or drag its blue handles right away. Double-click a text annotation to edit it. The editor remembers your last tool, color, stroke width and styles for the next capture.
+
+An arrow's head sits where you start the drag, and the drag pulls the tail. The arrow style menu offers Standard, Fancy, Curved, Double and Outline.
+
+The text tool has a size menu from 10 to 216 pt and seven styles: Standard, Rounded, Outlined, Mono, Box, Mono Box and Rounded Box. New text uses Box, which draws the text in its color on a pale box of the same color. A style, size or color you pick also changes the selected text or arrow.
+
+The highlighter finds the text in the screenshot. Over text, its cursor shrinks to the height of the line under it, and a drag follows that one line horizontally and stops where its text ends. Away from text, it draws a free box. On a dark screen the highlight lightens the area, and on a light screen it darkens it, so the text stays readable on both.
 
 The blur and redact tool has four styles. Pixelate and Gaussian Blur hide content visually, and a slider sets the pixel size or the blur radius. Secure Blur pixelates the area twice on different grids with a blur in between, so the original text can't be rebuilt from the block averages. Black Bar replaces the pixels completely, and you should use it for passwords and other secrets.
 

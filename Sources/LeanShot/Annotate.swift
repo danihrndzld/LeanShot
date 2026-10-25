@@ -9,6 +9,10 @@ enum Tool: Int, CaseIterable, Codable {
     /// Crop has its own toolbar button, so the tool group stays compact.
     static var grouped: [Tool] { visible.filter { ![.crop, .blur, .redact].contains($0) } }
     /// Redaction styles of the pixelate tool: title, SF Symbol, slider meaning.
+    /// Arrow and text styles in menu order: title and `Mark.style` raw value. Raw values are saved, so new styles go at the end.
+    static let arrowStyles: [(String, Int)] = [("Standard", 0), ("Fancy", 4), ("Curved", 1), ("Double", 2), ("Outline", 3)]
+    static let textStyles: [(String, Int)] = [("Standard", 1), ("Rounded", 7), ("Outlined", 0), ("Mono", 2), ("Box", 8), ("Mono Box", 9), ("Rounded Box", 10)]
+    static let textSizes: [CGFloat] = [10, 13, 16, 20, 24, 30, 36, 48, 72, 96, 144, 216]
     static let redactions: [(String, String, String)] = [("Pixelate", "squareshape.split.3x3", "Pixel Size"), ("Gaussian Blur", "drop.halffull", "Blur Radius"),
                                                          ("Secure Blur", "lock.shield", "Strength"), ("Black Bar", "rectangle.fill", "")]
     var symbol: String { traits.symbol }
@@ -23,8 +27,8 @@ enum Tool: Int, CaseIterable, Codable {
         case .filledRect: ToolTraits(symbol: "square.fill", label: "Filled Rectangle", key: "f", lifted: true)
         case .ellipse: ToolTraits(symbol: "circle", label: "Ellipse", key: "e", lifted: true)
         case .line: ToolTraits(symbol: "line.diagonal", label: "Line", key: "l", handles: .endpoints, lifted: true)
-        case .arrow: ToolTraits(symbol: "arrow.up.right", label: "Arrow", key: "a", handles: .endpoints, lifted: true, styles: 4)
-        case .text: ToolTraits(symbol: "textformat", label: "Text", key: "t", handles: .none, styles: 7)
+        case .arrow: ToolTraits(symbol: "arrow.up.right", label: "Arrow", key: "a", handles: .endpoints, lifted: true, styles: 5)
+        case .text: ToolTraits(symbol: "textformat", label: "Text", key: "t", handles: .none, styles: 11)
         case .pixelate: ToolTraits(symbol: "squareshape.split.3x3", label: "Blur & Redact", key: "x", styles: Tool.redactions.count)
         case .highlight: ToolTraits(symbol: "highlighter", label: "Highlight", key: "m")
         case .counter: ToolTraits(symbol: "1.circle.fill", label: "Counter", key: "c", handles: .none, lifted: true)
@@ -168,7 +172,7 @@ struct Mark: Codable, Equatable {
             let d = Mark.counterDiameter(width)
             r = CGRect(x: points[0].x - d / 2, y: points[0].y - d / 2, width: d, height: d)
         case .text:
-            r = CGRect(origin: points[0], size: (text as NSString).size(withAttributes: Mark.textAttributes(color, width)))
+            return textFrame.insetBy(dx: -4, dy: -4) // width is the font size, not a stroke
         case .select, .rect, .filledRect, .ellipse, .line, .arrow, .pixelate, .highlight, .blur, .spotlight, .crop, .redact, .image:
             r = rect
         }
@@ -179,10 +183,33 @@ struct Mark: Codable, Equatable {
         points = points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
     }
 
-    static func font(_ width: CGFloat) -> NSFont { .systemFont(ofSize: 12 + width * 3, weight: .bold) }
     static func counterDiameter(_ width: CGFloat) -> CGFloat { 18 + width * 3 }
-    static func textAttributes(_ color: NSColor, _ width: CGFloat) -> [NSAttributedString.Key: Any] {
-        [.font: font(width), .foregroundColor: color, .strokeColor: NSColor.white, .strokeWidth: -3]
+    /// How a text style looks at `size` points: 0 outlined, 1 bold, 2 mono, 3 regular, 4 white label, 5 black label,
+    /// 6 color label, 7 rounded, 8 box (tinted, the default), 9 mono box, 10 rounded box (pill).
+    static func textStyle(_ style: Int, _ color: NSColor, _ size: CGFloat) -> (attrs: [NSAttributedString.Key: Any], box: NSColor?, pad: CGSize, radius: CGFloat?) {
+        var font = NSFont.systemFont(ofSize: size, weight: style == 3 ? .regular : .bold)
+        if [2, 9].contains(style) { font = .monospacedSystemFont(ofSize: size, weight: style == 2 ? .medium : .semibold) }
+        if [7, 10].contains(style), let rounded = font.fontDescriptor.withDesign(.rounded) { font = NSFont(descriptor: rounded, size: size) ?? font }
+        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        if style == 0 { attrs[.strokeColor] = NSColor.white; attrs[.strokeWidth] = -3 }
+        let rgb = color.usingColorSpace(.sRGB) ?? color
+        // A pale wash of the text color; light colors get a dark wash so they stay readable.
+        let tint = rgb.brightnessComponent > 0.85 && rgb.saturationComponent < 0.5 ? rgb.blended(withFraction: 0.82, of: .black) : rgb.blended(withFraction: 0.9, of: .white)
+        let box: NSColor?
+        switch style {
+        case 4: box = .white; attrs[.foregroundColor] = NSColor.black
+        case 5: box = .black; attrs[.foregroundColor] = NSColor.white
+        case 6, 10: box = color; attrs[.foregroundColor] = NSColor.white
+        case 8, 9: box = tint ?? color.withAlphaComponent(0.12)
+        default: box = nil
+        }
+        // nil radius: a pill as round as the box is tall.
+        return (attrs, box, box == nil ? .zero : CGSize(width: size * 0.38, height: size * 0.16), style == 10 ? nil : size * 0.28)
+    }
+    /// Text marks keep their font size in points in `width`; the frame includes the box of boxed styles.
+    var textFrame: CGRect {
+        let look = Mark.textStyle(style, color, width)
+        return CGRect(origin: points[0], size: (text as NSString).size(withAttributes: look.attrs)).insetBy(dx: -look.pad.width, dy: -look.pad.height)
     }
 }
 
@@ -206,15 +233,67 @@ final class Canvas: NSView, NSTextFieldDelegate {
         if !dirty.isNull { setNeedsDisplay(dirty.insetBy(dx: -12 * chromeScale, dy: -12 * chromeScale)) } // handles and outline
     }
     var tool: Tool = .arrow { didSet { selected = nil; dragFrom = nil; onToolChange?(tool); if tool == .highlight { detectHighlightText() }; remember() } }
-    private var highlightRects: [CGRect]?
+    var highlightRects: [CGRect]? // normalized Vision boxes; tests set them directly
     private func detectHighlightText() {
         guard highlightRects == nil else { return }
         highlightRects = []
         let source = image
         OCR.textRects(source) { [weak self] rects in if let self, self.image === source { self.highlightRects = rects } }
     }
+    /// The detected text line at a point, in view points: the line box under it, joined with boxes beside it on that line.
+    func textLine(at p: CGPoint) -> CGRect? {
+        let boxes = (highlightRects ?? []).map { CGRect(x: $0.minX * bounds.width, y: $0.minY * bounds.height, width: $0.width * bounds.width, height: $0.height * bounds.height) }
+        guard let hit = boxes.filter({ $0.insetBy(dx: -6, dy: -max(3, $0.height * 0.25)).contains(p) }).min(by: { $0.height < $1.height }) else { return nil }
+        return boxes.filter { abs($0.midY - hit.midY) < hit.height / 2 }.reduce(hit) { $0.union($1) }
+    }
+    private var highlightLine: CGRect?
+    /// Highlighter cursor: a capsule as tall as the text under it on screen, so you see the line it will follow.
+    private static var capsules: [Int: NSCursor] = [:]
+    private func highlightCursor(_ height: CGFloat) -> NSCursor {
+        let h = Int(min(96, max(10, height)).rounded())
+        if let cached = Canvas.capsules[h] { return cached }
+        let w = max(6, CGFloat(h) * 0.28), size = NSSize(width: w + 4, height: CGFloat(h) + 4)
+        let image = NSImage(size: size, flipped: false) { r in
+            let capsule = NSBezierPath(roundedRect: r.insetBy(dx: 2, dy: 2), xRadius: w / 2, yRadius: w / 2)
+            NSColor.black.withAlphaComponent(0.55).setStroke(); capsule.lineWidth = 3; capsule.stroke()
+            NSColor.white.setStroke(); capsule.lineWidth = 1.5; capsule.stroke()
+            return true
+        }
+        let cursor = NSCursor(image: image, hotSpot: NSPoint(x: size.width / 2, y: size.height / 2))
+        Canvas.capsules[h] = cursor; return cursor
+    }
+    /// 32 x 32 grayscale copy of the image, so a highlight can tell a dark screen from a light one on every frame.
+    private var luma: (source: NSImage, pixels: [UInt8])?
+    private func isDark(_ rect: CGRect, _ imageRect: CGRect) -> Bool {
+        let n = 32
+        if luma?.source !== image {
+            var pixels = [UInt8](repeating: 255, count: n * n)
+            if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                pixels.withUnsafeMutableBytes { buffer in
+                    CGContext(data: buffer.baseAddress, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n, space: CGColorSpaceCreateDeviceGray(),
+                              bitmapInfo: CGImageAlphaInfo.none.rawValue)?.draw(cg, in: CGRect(x: 0, y: 0, width: n, height: n))
+                }
+            }
+            luma = (image, pixels)
+        }
+        guard let pixels = luma?.pixels, imageRect.width > 0, imageRect.height > 0 else { return false }
+        // Row 0 of the bitmap is the top of the image.
+        func cell(_ v: CGFloat) -> Int { min(n - 1, max(0, Int(v * CGFloat(n)))) }
+        let x0 = cell((rect.minX - imageRect.minX) / imageRect.width), x1 = cell((rect.maxX - imageRect.minX) / imageRect.width)
+        let y0 = cell((imageRect.maxY - rect.maxY) / imageRect.height), y1 = cell((imageRect.maxY - rect.minY) / imageRect.height)
+        var sum = 0
+        for y in y0...y1 { for x in x0...x1 { sum += Int(pixels[y * n + x]) } }
+        return sum / ((x1 - x0 + 1) * (y1 - y0 + 1)) < 100
+    }
     var color: NSColor = .systemRed { didSet { if let selected { checkpoint(); marks[selected].color = color }; remember() } }
-    var width: CGFloat = 5 { didSet { if let selected, marks[selected].tool != .pixelate { checkpoint(); marks[selected].width = width }; remember() } }
+    var width: CGFloat = 5 { didSet { if let selected, ![.pixelate, .text].contains(marks[selected].tool) { checkpoint(); marks[selected].width = width }; remember() } }
+    /// Font size in points for new text; a selected text mark takes it too.
+    var textSize: CGFloat = 24 { didSet { restyle(.text) { $0.width = textSize }; remember() } }
+    /// Applies a style pick to the selected mark when it is of that tool.
+    private func restyle(_ kind: Tool, _ change: (inout Mark) -> Void) {
+        guard let i = selected, i < marks.count, marks[i].tool == kind else { return }
+        checkpoint(); change(&marks[i])
+    }
     /// Redaction: 0 pixelate, 1 gaussian, 2 secure (pixelate + blur), 3 black bar. Amount is block size / radius in points.
     var redactStyle = 0 { didSet { adjustRedaction { $0.style = redactStyle }; remember() } }
     var redactAmount: CGFloat = 14 { didSet { adjustRedaction { $0.width = redactAmount }; remember() } }
@@ -224,8 +303,8 @@ final class Canvas: NSView, NSTextFieldDelegate {
         if adjusting != i { checkpoint(); adjusting = i }
         change(&marks[i])
     }
-    var arrowStyle = 0 { didSet { remember() } }
-    var textStyle = 0 { didSet { remember() } }
+    var arrowStyle = 0 { didSet { restyle(.arrow) { $0.style = arrowStyle }; remember() } }
+    var textStyle = 8 { didSet { restyle(.text) { $0.style = textStyle }; remember() } }
     /// Editor windows remember tool, color, sizes and styles across captures; tests and previews leave it off.
     var remembersChoices = false
     private func remember() {
@@ -237,7 +316,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
     @objc private func saveChoices() {
         let rgb = color.usingColorSpace(.sRGB) ?? .systemRed
         Settings.editorChoices = ["tool": Double(tool == .crop ? Tool.arrow.rawValue : tool.rawValue), "width": width, "redactStyle": Double(redactStyle),
-                                  "redactAmount": redactAmount, "arrowStyle": Double(arrowStyle), "textStyle": Double(textStyle),
+                                  "redactAmount": redactAmount, "arrowStyle": Double(arrowStyle), "textStyle": Double(textStyle), "textSize": textSize,
                                   "r": rgb.redComponent, "g": rgb.greenComponent, "b": rgb.blueComponent, "a": rgb.alphaComponent]
     }
     func restoreChoices() {
@@ -246,8 +325,10 @@ final class Canvas: NSView, NSTextFieldDelegate {
         if let w = c["width"], (2...40).contains(w) { width = w }
         if let s = c["redactStyle"], Tool.redactions.indices.contains(Int(s)) { redactStyle = Int(s) }
         if let a = c["redactAmount"], (4...40).contains(a) { redactAmount = a }
-        if let s = c["arrowStyle"], (0..<4).contains(Int(s)) { arrowStyle = Int(s) }
-        if let s = c["textStyle"], (0..<7).contains(Int(s)) { textStyle = Int(s) }
+        if let s = c["arrowStyle"], (0..<Tool.arrow.traits.styles).contains(Int(s)) { arrowStyle = Int(s) }
+        // Builds before text sizes saved the old outlined default; those choices start on the new Box default once.
+        if c["textSize"] != nil, let s = c["textStyle"], (0..<Tool.text.traits.styles).contains(Int(s)) { textStyle = Int(s) }
+        if let size = c["textSize"], (8...256).contains(size) { textSize = size }
         if let r = c["r"], let g = c["g"], let b = c["b"] { color = NSColor(srgbRed: r, green: g, blue: b, alpha: c["a"] ?? 1) }
         remembersChoices = true
     }
@@ -377,8 +458,10 @@ final class Canvas: NSView, NSTextFieldDelegate {
         case .filledRect:
             NSBezierPath(roundedRect: m.rect, xRadius: 3, yRadius: 3).fill()
         case .highlight:
-            m.color.withAlphaComponent(0.35).set()
-            m.rect.fill(using: .multiply)
+            // Multiply keeps dark text on light screens; on dark screens it would vanish, so screen lightens instead.
+            let dark = isDark(m.rect, imageRect)
+            m.color.withAlphaComponent(dark ? 0.9 : 0.35).set()
+            m.rect.fill(using: dark ? .screen : .multiply)
         case .pixelate, .blur:
             // Legacy .blur marks render as a gaussian at their original strength.
             let style = m.tool == .blur ? 1 : m.style, amount = m.tool == .blur ? 18 : m.width
@@ -401,32 +484,9 @@ final class Canvas: NSView, NSTextFieldDelegate {
             p.lineJoinStyle = .round
             p.stroke()
         case .arrow:
-            guard let a = m.points.first, let b = m.points.last, a != b else { return }
-            if m.style == 1 { // Curved arrow with a tangent-aligned head.
-                let mid = CGPoint(x: (a.x + b.x) / 2 - (b.y - a.y) * 0.32, y: (a.y + b.y) / 2 + (b.x - a.x) * 0.32)
-                let path = NSBezierPath(); path.move(to: a); path.curve(to: b, controlPoint1: mid, controlPoint2: mid)
-                path.lineWidth = m.width; path.lineCapStyle = .round; path.stroke()
-                let length = max(1, hypot(b.x - mid.x, b.y - mid.y)), head = min(length, max(16, m.width * 4))
-                let start = CGPoint(x: b.x - (b.x - mid.x) / length * head, y: b.y - (b.y - mid.y) / length * head)
-                Canvas.arrowPath(from: start, to: b, width: m.width).fill()
-            } else {
-                let path = Canvas.arrowPath(from: a, to: b, width: m.width)
-                if m.style == 3 { path.lineWidth = 1.5; path.stroke() } else { path.fill() }
-                if m.style == 2 { Canvas.arrowPath(from: b, to: a, width: m.width).fill() }
-            }
+            Canvas.drawArrow(m)
         case .text:
-            var attrs = Mark.textAttributes(m.color, m.width)
-            if m.style > 0 { attrs[.strokeWidth] = 0 }
-            if m.style == 2 { attrs[.font] = NSFont.monospacedSystemFont(ofSize: 12 + m.width * 3, weight: .medium) }
-            if m.style == 3 { attrs[.font] = NSFont.systemFont(ofSize: 12 + m.width * 3, weight: .regular) }
-            if m.style >= 4 {
-                let size = (m.text as NSString).size(withAttributes: attrs)
-                let box = NSRect(origin: m.points[0], size: size).insetBy(dx: -8, dy: -4)
-                (m.style == 4 ? NSColor.white : m.style == 5 ? NSColor.black : m.color).setFill()
-                NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5).fill()
-                attrs[.foregroundColor] = m.style == 4 ? NSColor.black : NSColor.white
-            }
-            (m.text as NSString).draw(at: m.points[0], withAttributes: attrs)
+            Canvas.drawText(m)
         case .counter:
             let d = Mark.counterDiameter(m.width), c = m.points[0]
             NSBezierPath(ovalIn: NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)).fill()
@@ -436,6 +496,53 @@ final class Canvas: NSView, NSTextFieldDelegate {
             let size = s.size(withAttributes: attrs)
             s.draw(at: NSPoint(x: c.x - size.width / 2, y: c.y - size.height / 2), withAttributes: attrs)
         }
+    }
+
+    /// The head sits on the last point; drawing puts that point where the drag started.
+    static func drawArrow(_ m: Mark) {
+        guard let a = m.points.first, let b = m.points.last, a != b else { return }
+        switch m.style {
+        case 1: // Curved arrow with a tangent-aligned head.
+            let mid = CGPoint(x: (a.x + b.x) / 2 - (b.y - a.y) * 0.32, y: (a.y + b.y) / 2 + (b.x - a.x) * 0.32)
+            let path = NSBezierPath(); path.move(to: a); path.curve(to: b, controlPoint1: mid, controlPoint2: mid)
+            path.lineWidth = m.width; path.lineCapStyle = .round; path.stroke()
+            let length = max(1, hypot(b.x - mid.x, b.y - mid.y)), head = min(length, max(16, m.width * 4))
+            let start = CGPoint(x: b.x - (b.x - mid.x) / length * head, y: b.y - (b.y - mid.y) / length * head)
+            arrowPath(from: start, to: b, width: m.width).fill()
+        case 4: fancyArrowPath(from: a, to: b, width: m.width).fill()
+        default:
+            let path = arrowPath(from: a, to: b, width: m.width)
+            if m.style == 3 { path.lineWidth = 1.5; path.stroke() } else { path.fill() }
+            if m.style == 2 { arrowPath(from: b, to: a, width: m.width).fill() }
+        }
+    }
+
+    static func drawText(_ m: Mark) {
+        let look = Mark.textStyle(m.style, m.color, m.width)
+        if let fill = look.box {
+            let box = m.textFrame, r = look.radius ?? box.height / 2
+            fill.setFill(); NSBezierPath(roundedRect: box, xRadius: r, yRadius: r).fill()
+        }
+        (m.text as NSString).draw(at: m.points[0], withAttributes: look.attrs)
+    }
+
+    /// Tapered shaft that swells into a head with swept-back barbs.
+    static func fancyArrowPath(from a: CGPoint, to b: CGPoint, width w: CGFloat) -> NSBezierPath {
+        let len = hypot(b.x - a.x, b.y - a.y)
+        let head = min(len * 0.55, max(20, w * 5)), half = head * 0.5, neck = len - head * 0.62
+        let p = NSBezierPath()
+        p.move(to: CGPoint(x: 0, y: -w * 0.15))
+        p.line(to: CGPoint(x: neck, y: -w * 0.55))
+        p.line(to: CGPoint(x: len - head, y: -half))
+        p.curve(to: CGPoint(x: len, y: 0), controlPoint1: CGPoint(x: len - head * 0.45, y: -half * 0.35), controlPoint2: CGPoint(x: len - head * 0.2, y: -half * 0.12))
+        p.curve(to: CGPoint(x: len - head, y: half), controlPoint1: CGPoint(x: len - head * 0.2, y: half * 0.12), controlPoint2: CGPoint(x: len - head * 0.45, y: half * 0.35))
+        p.line(to: CGPoint(x: neck, y: w * 0.55))
+        p.line(to: CGPoint(x: 0, y: w * 0.15))
+        p.appendArc(withCenter: .zero, radius: w * 0.15, startAngle: 90, endAngle: 270)
+        p.close()
+        let t = NSAffineTransform(); t.translateX(by: a.x, yBy: a.y); t.rotate(byRadians: atan2(b.y - a.y, b.x - a.x))
+        p.transform(using: t as AffineTransform)
+        return p
     }
 
     /// Filled arrow: shaft + triangular head, so it exports crisply at any scale.
@@ -536,6 +643,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
             return
         }
         hovered = mark(at: p)
+        if hovered == nil, tool == .highlight { return highlightCursor((textLine(at: p)?.height ?? 26) / chromeScale).set() }
         (hovered != nil ? NSCursor.openHand : tool == .text ? NSCursor.iBeam : tool == .select ? NSCursor.arrow : NSCursor.crosshair).set()
     }
     /// Shift snaps lines to 45° steps.
@@ -628,7 +736,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
             // Double-click a text mark to fix it in place, keeping its color, size and style.
             let m = marks[i]
             checkpoint(); marks.remove(at: i); selected = nil
-            color = m.color; width = m.width; textStyle = m.style
+            color = m.color; textSize = m.width; textStyle = m.style
             beginText(at: m.points[0], text: m.text); return
         }
         if let i = mark(at: p) {
@@ -650,6 +758,8 @@ final class Canvas: NSView, NSTextFieldDelegate {
             let redaction = tool == .pixelate
             marks.append(Mark(tool: tool, points: [p, p], color: color, width: redaction ? redactAmount : width, style: redaction ? redactStyle : tool == .arrow ? arrowStyle : 0))
             drag = .draw; dragFrom = p
+            highlightLine = tool == .highlight ? textLine(at: p) : nil
+            if let line = highlightLine { highlight(from: p, to: p, on: line) }
         }
     }
 
@@ -683,25 +793,20 @@ final class Canvas: NSView, NSTextFieldDelegate {
             }
         case .draw:
             if tool == .pen { marks[marks.count - 1].points.append(p); return }
+            if let line = highlightLine { highlight(from: from, to: p, on: line); return }
             if tool == .crop { p.x = min(max(0, p.x), bounds.width); p.y = min(max(0, p.y), bounds.height) }
             let endpoints = tool.traits.handles == .endpoints
             if shift, endpoints { p = snapped(p, from: from) }
             let aspect = tool == .crop && cropAspect > 0 ? cropAspect : shift && !endpoints ? 1 : 0
             if aspect > 0 { p.y = from.y + (p.y >= from.y ? 1 : -1) * abs(p.x - from.x) / aspect }
-            marks[marks.count - 1].points[1] = p
+            // The head is the last point, so an arrow's head stays where the click started and the drag pulls the tail.
+            marks[marks.count - 1].points[tool == .arrow ? 0 : 1] = p
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragFrom = nil; drag = nil; updateHover(convert(event.locationInWindow, from: nil)) }
         guard case .draw = drag else { return }
-        if tool == .highlight, let mark = marks.last, mark.tool == .highlight, let highlightRects {
-            let boxes = highlightRects.map { CGRect(x: $0.minX * bounds.width, y: $0.minY * bounds.height, width: $0.width * bounds.width, height: $0.height * bounds.height) }.filter { $0.intersects(mark.rect) }
-            if let first = boxes.first {
-                let line = boxes.dropFirst().reduce(first) { $0.union($1) }
-                marks[marks.count - 1].points = [CGPoint(x: mark.rect.minX, y: line.minY - 1), CGPoint(x: mark.rect.maxX, y: line.maxY + 1)]
-            }
-        }
         if tool == .crop, let m = marks.last, m.tool == .crop {
             marks.removeLast()
             if m.rect.width > 1, m.rect.height > 1 {
@@ -714,7 +819,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
             needsDisplay = true; return
         }
         // A click without a drag leaves an empty shape behind; drop it.
-        if let m = marks.last, m.points.count == 2, m.points[0] == m.points[1] {
+        if let m = marks.last, m.points.count == 2, m.points[0] == m.points[1] || (m.tool == .highlight && m.rect.width < 1) {
             marks.removeLast()
             _ = history.popLast()
         } else if tool != .pen {
@@ -747,9 +852,15 @@ final class Canvas: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// Locks a highlight to one text line: its height, and only as far as the line's text runs.
+    private func highlight(from a: CGPoint, to b: CGPoint, on line: CGRect) {
+        func x(_ v: CGFloat) -> CGFloat { min(max(v, line.minX - 2), line.maxX + 2) }
+        marks[marks.count - 1].points = [CGPoint(x: x(a.x), y: line.minY - 1), CGPoint(x: x(b.x), y: line.maxY + 1)]
+    }
+
     private func beginText(at p: CGPoint, text: String = "") {
         let f = NSTextField(string: text)
-        f.font = Mark.font(width)
+        f.font = Mark.textStyle(textStyle, color, textSize).attrs[.font] as? NSFont
         f.textColor = color
         f.isBordered = false
         f.drawsBackground = false
@@ -769,7 +880,7 @@ final class Canvas: NSView, NSTextFieldDelegate {
         f.removeFromSuperview()
         guard !f.stringValue.isEmpty else { return }
         checkpoint()
-        marks.append(Mark(tool: .text, points: [CGPoint(x: f.frame.minX + 2, y: f.frame.minY)], color: color, width: width,
+        marks.append(Mark(tool: .text, points: [CGPoint(x: f.frame.minX + 2, y: f.frame.minY)], color: color, width: textSize,
                           text: f.stringValue, style: textStyle))
         selected = marks.count - 1 // like every other shape, the new text stays selected
         window?.makeFirstResponder(self)
@@ -915,6 +1026,7 @@ private extension NSToolbarItem.Identifier {
     static let tools = Self("tools"), color = Self("color"), stroke = Self("stroke")
     static let saveAs = Self("saveAs"), done = Self("done")
     static let edit = Self("edit"), redaction = Self("redaction")
+    static let arrowStyle = Self("arrowStyle"), textStyle = Self("textStyle"), textSize = Self("textSize")
     static let background = Self("background"), insert = Self("insert"), crop = Self("crop")
 }
 
@@ -944,6 +1056,27 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         }
         image.isTemplate = true; return image
     }
+    /// Menu preview of an arrow style, drawn by the same code as the canvas.
+    private static func arrowImage(_ style: Int) -> NSImage {
+        let image = NSImage(size: NSSize(width: 34, height: 18), flipped: false) { _ in
+            NSColor.black.set()
+            // Drawn at 3x and scaled down, because heads have a minimum size that would swallow a 30 pt arrow.
+            let t = NSAffineTransform(); t.scale(by: 1.0 / 3); t.concat()
+            Canvas.drawArrow(Mark(tool: .arrow, points: [CGPoint(x: 9, y: 12), CGPoint(x: 93, y: 42)], color: .black, width: 6, style: style))
+            return true
+        }
+        image.isTemplate = true; return image
+    }
+    /// Menu preview of a text style: the word "Text" as the canvas draws it.
+    private static func textImage(_ style: Int, _ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 56, height: 24), flipped: false) { r in
+            var m = Mark(tool: .text, points: [.zero], color: color, width: 14, text: "Text", style: style)
+            let frame = m.textFrame
+            m.points = [CGPoint(x: (r.width - frame.width) / 2 + (m.points[0].x - frame.minX), y: (r.height - frame.height) / 2 + (m.points[0].y - frame.minY))]
+            Canvas.drawText(m)
+            return true
+        }
+    }
 
     private(set) var canvas: Canvas! // read by the e2e driver
     private var backdrop: Backdrop!
@@ -958,8 +1091,11 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     private var strokeSlider: NSSlider?
     private var redactPicker: NSPopUpButton?
     private var redactSlider: NSSlider?
-    /// Stroke and redaction controls swap places with the tool (macOS 15+ can hide toolbar items).
-    private var contextualItems: (stroke: NSToolbarItem?, redaction: NSToolbarItem?)
+    private var arrowPicker: NSPopUpButton?
+    private var textStylePicker: NSPopUpButton?
+    private var textSizePicker: NSPopUpButton?
+    /// Stroke, redaction, arrow and text controls swap places with the tool (macOS 15+ can hide toolbar items).
+    private var contextualItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var backgroundItem: NSToolbarItem?
 
     @discardableResult
@@ -1148,6 +1284,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         case .increaseSize, .decreaseSize:
             let step: CGFloat = shortcut == .increaseSize ? 2 : -2
             if canvas.tool == .pixelate { canvas.redactAmount = min(40, max(4, canvas.redactAmount + step)) }
+            else if canvas.tool == .text { canvas.textSize = min(256, max(8, canvas.textSize * (step > 0 ? 1.25 : 0.8)).rounded()) }
             else { canvas.width = min(40, max(2, canvas.width + step)) }
             refreshStroke()
         }
@@ -1193,7 +1330,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.crop, .insert, .background, .sidebarTrackingSeparator, .tools, .color, .stroke, .redaction, .edit, .flexibleSpace, .saveAs, .done]
+        [.crop, .insert, .background, .sidebarTrackingSeparator, .tools, .color, .stroke, .arrowStyle, .textSize, .textStyle, .redaction, .edit, .flexibleSpace, .saveAs, .done]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -1257,8 +1394,6 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
                 for (i, name) in names.enumerated() { let m = NSMenuItem(title: name, action: action, keyEquivalent: ""); m.tag = i; m.target = self; sub.addItem(m) }
                 parent.image = Self.symbol(symbol, title); parent.submenu = sub; button.menu?.addItem(parent)
             }
-            submenu("Arrow Style", "arrow.up.right", ["Filled", "Curved", "Double Headed", "Outline"], #selector(arrowStyle(_:)))
-            submenu("Text Style", "textformat", ["Outlined", "Bold", "Monospace", "Regular", "White Label", "Black Label", "Color Label"], #selector(textStyle(_:)))
             submenu("Crop Aspect Ratio", "aspectratio", ["Freeform", "Square", "16:9", "4:3", "9:16"], #selector(cropAspect(_:)))
             return toolbarItem(id, button, "Image & Styles")
         case .stroke:
@@ -1276,7 +1411,32 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             let sliderItem = NSMenuItem(); sliderItem.view = host; button.menu?.addItem(sliderItem)
             strokeItem = button; strokeSlider = slider
             refreshStroke()
-            let item = toolbarItem(id, button, "Stroke"); contextualItems.stroke = item; updateContextualItems()
+            let item = toolbarItem(id, button, "Stroke"); contextualItems[id] = item; updateContextualItems()
+            return item
+        case .arrowStyle, .textStyle:
+            let isArrow = id == .arrowStyle
+            let button = Self.pullDown(nil, isArrow ? "Arrow Style" : "Text Style")
+            for (title, style) in isArrow ? Tool.arrowStyles : Tool.textStyles {
+                let m = NSMenuItem(title: title, action: isArrow ? #selector(arrowStyle(_:)) : #selector(textStyle(_:)), keyEquivalent: "")
+                m.target = self; m.tag = style; m.image = isArrow ? Self.arrowImage(style) : Self.textImage(style, .systemGray)
+                button.menu?.addItem(m)
+            }
+            if isArrow { arrowPicker = button } else { textStylePicker = button }
+            refreshStroke()
+            let item = toolbarItem(id, button, isArrow ? "Arrow Style" : "Text Style"); contextualItems[id] = item; updateContextualItems()
+            return item
+        case .textSize:
+            let button = Self.pullDown(nil, "Text Size")
+            button.imagePosition = .noImage
+            for size in Tool.textSizes {
+                let m = NSMenuItem(title: "\(Int(size)) pt", action: #selector(pickTextSize(_:)), keyEquivalent: ""); m.target = self; m.tag = Int(size)
+                let aa = NSAttributedString(string: "Aa", attributes: [.font: NSFont.systemFont(ofSize: min(26, 9 + size / 9)), .foregroundColor: NSColor.secondaryLabelColor])
+                m.image = NSImage(size: NSSize(width: 34, height: 28), flipped: false) { r in aa.draw(at: NSPoint(x: 2, y: (r.height - aa.size().height) / 2)); return true }
+                button.menu?.addItem(m)
+            }
+            textSizePicker = button
+            refreshStroke()
+            let item = toolbarItem(id, button, "Text Size"); contextualItems[id] = item; updateContextualItems()
             return item
         case .redaction:
             let picker = Self.pullDown(nil, "Redaction Style")
@@ -1289,7 +1449,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
             let stack = NSStackView(views: [picker, slider]); stack.spacing = 8
             redactPicker = picker; redactSlider = slider
             refreshStroke()
-            let item = toolbarItem(id, stack, "Redaction"); contextualItems.redaction = item; updateContextualItems()
+            let item = toolbarItem(id, stack, "Redaction"); contextualItems[id] = item; updateContextualItems()
             return item
         case .saveAs, .done:
             let isDone = id == .done
@@ -1335,8 +1495,12 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
 
     private func updateContextualItems() {
         guard #available(macOS 15, *) else { return }
-        contextualItems.stroke?.isHidden = canvas.tool == .pixelate
-        contextualItems.redaction?.isHidden = canvas.tool != .pixelate
+        let t = canvas.tool
+        contextualItems[.stroke]?.isHidden = t == .pixelate || t == .text
+        contextualItems[.redaction]?.isHidden = t != .pixelate
+        contextualItems[.arrowStyle]?.isHidden = t != .arrow
+        contextualItems[.textStyle]?.isHidden = t != .text
+        contextualItems[.textSize]?.isHidden = t != .text
     }
 
     @objc private func pickTool(_ sender: Any) {
@@ -1352,6 +1516,7 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
     private func refreshColor() {
         colorItem?.item(at: 0)?.image = Self.dot(canvas.color, 18)
         colorItem?.menu?.items.forEach { $0.state = ($0.representedObject as? NSColor) == canvas.color ? .on : .off }
+        textStylePicker?.item(at: 0)?.image = Self.textImage(canvas.textStyle, canvas.color)
     }
 
     @objc private func pickStroke(_ sender: NSMenuItem) {
@@ -1370,14 +1535,23 @@ final class AnnotateWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         redactPicker?.menu?.items.dropFirst().forEach { $0.state = $0.tag == canvas.redactStyle ? .on : .off }
         redactSlider?.doubleValue = canvas.redactAmount
         redactSlider?.isEnabled = !meaning.isEmpty; redactSlider?.toolTip = meaning
+        arrowPicker?.item(at: 0)?.image = Self.arrowImage(canvas.arrowStyle)
+        arrowPicker?.menu?.items.dropFirst().forEach { $0.state = $0.tag == canvas.arrowStyle ? .on : .off }
+        textStylePicker?.item(at: 0)?.image = Self.textImage(canvas.textStyle, canvas.color)
+        textStylePicker?.menu?.items.dropFirst().forEach { $0.state = $0.tag == canvas.textStyle ? .on : .off }
+        textSizePicker?.item(at: 0)?.title = "\(Int(canvas.textSize.rounded())) pt"
+        textSizePicker?.menu?.items.dropFirst().forEach { $0.state = CGFloat($0.tag) == canvas.textSize.rounded() ? .on : .off }
     }
 
     @objc private func customColor() {
         let p = NSColorPanel.shared; p.setTarget(self); p.setAction(#selector(colorChanged(_:))); p.color = canvas.color; p.orderFront(nil)
     }
     @objc private func colorChanged(_ sender: NSColorPanel) { canvas.color = sender.color; refreshColor() }
-    @objc private func arrowStyle(_ sender: NSMenuItem) { canvas.arrowStyle = sender.tag; canvas.tool = .arrow }
-    @objc private func textStyle(_ sender: NSMenuItem) { canvas.textStyle = sender.tag; canvas.tool = .text }
+    /// A style pick restyles the selected arrow or text; otherwise it switches to that tool.
+    @objc private func arrowStyle(_ sender: NSMenuItem) { canvas.arrowStyle = sender.tag; if !selects(.arrow) { canvas.tool = .arrow }; refreshStroke() }
+    @objc private func textStyle(_ sender: NSMenuItem) { canvas.textStyle = sender.tag; if !selects(.text) { canvas.tool = .text }; refreshStroke() }
+    @objc private func pickTextSize(_ sender: NSMenuItem) { canvas.textSize = CGFloat(sender.tag); if !selects(.text) { canvas.tool = .text }; refreshStroke() }
+    private func selects(_ tool: Tool) -> Bool { canvas.selected.map { $0 < canvas.marks.count && canvas.marks[$0].tool == tool } ?? false }
     @objc private func cropAspect(_ sender: NSMenuItem) { canvas.cropAspect = [0, 1, 16.0 / 9, 4.0 / 3, 9.0 / 16][sender.tag]; canvas.tool = .crop }
     @objc private func undoEdit() { canvas.undo() }
     @objc private func redoEdit() { canvas.redo() }

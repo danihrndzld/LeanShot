@@ -195,9 +195,19 @@ enum EditorTests {
 
             checkThrows(try sut.decodedImage())
         }
-        // Text has 7 styles (0 to 6); a rect may carry the arrow style older builds leaked onto every shape.
+        // Text has 11 styles (0 to 10); a rect may carry the arrow style older builds leaked onto every shape.
         test("a text layer with an unknown style is rejected") {
-            checkThrows(try roundTrip(Mark(tool: .text, points: [.zero], color: .red, width: 4, text: "a", style: 7)))
+            checkThrows(try roundTrip(Mark(tool: .text, points: [.zero], color: .red, width: 4, text: "a", style: 11)))
+        }
+        // Project version 1 stored text size as a stroke width; the font was 12 + 3 x width points.
+        test("a version 1 project opens its text at the same font size") {
+            let canvas = Canvas(image: fixture()); canvas.marks = [Mark(tool: .text, points: [.zero], color: .red, width: 4, text: "a")]
+            var old = try ShotProject(canvas: canvas); old.version = 1
+            let url = Capture.tempURL("leanshot"); defer { try? FileManager.default.removeItem(at: url) }; try old.write(url)
+
+            let project = try ShotProject.read(url)
+
+            checkEqual(project.marks.first?.width, 24)
         }
         test("a rect with the leaked arrow style still opens") {
             checkEqual(try roundTrip(rect(0, 0, 5, 5, style: 3)).style, 3)
@@ -335,6 +345,63 @@ enum EditorTests {
             check(!sut.duplicateSelection(), "duplicated without a selection")
 
             checkEqual(sut.marks.count, 1)
+        }
+
+        // README: an arrow's head sits where you start the drag.
+        test("an arrow's head stays where the drag started") {
+            let sut = canvas(tool: .arrow)
+
+            drag(sut, CGPoint(x: 10, y: 10), CGPoint(x: 80, y: 40))
+
+            checkEqual(sut.marks.last?.points.last, CGPoint(x: 10, y: 10))
+        }
+        // README: the highlighter follows the text line under the click, as far as its text runs.
+        test("a highlight locks to the text line under the click") {
+            let sut = canvas(tool: .highlight)
+            sut.highlightRects = [CGRect(x: 0.1, y: 0.5, width: 0.5, height: 0.2)] // x 10...60, y 30...42 in the 100 x 60 view
+
+            drag(sut, CGPoint(x: 20, y: 35), CGPoint(x: 95, y: 55))
+
+            checkEqual(sut.marks.last?.rect, CGRect(x: 20, y: 29, width: 42, height: 14))
+        }
+        test("a highlight away from text stays a free box") {
+            let sut = canvas(tool: .highlight)
+            sut.highlightRects = [CGRect(x: 0.1, y: 0.5, width: 0.5, height: 0.2)]
+
+            drag(sut, CGPoint(x: 20, y: 5), CGPoint(x: 40, y: 15))
+
+            checkEqual(sut.marks.last?.rect, CGRect(x: 20, y: 5, width: 20, height: 10))
+        }
+        // A multiply highlight on black stays black; on dark screens the highlight has to lighten.
+        test("a highlight on a dark screen lightens it") {
+            let black = ImageTools.render(size: NSSize(width: 100, height: 60), pixels: NSSize(width: 200, height: 120)) { r in NSColor.black.setFill(); r.fill() }
+            let sut = Canvas(image: black); sut.marks = [rect(10, 10, 90, 50, tool: .highlight)]
+
+            let pixel = color(sut.export(), 100, 60)
+
+            checkGreater(pixel.redComponent, 0.2)
+        }
+        // README: the default text style is Box, the text on a pale wash of its color.
+        test("new text is drawn on a box that its hit area covers") {
+            let sut = canvas(tool: .text)
+            let mark = Mark(tool: .text, points: [CGPoint(x: 20, y: 20)], color: .red, width: sut.textSize, text: "Hi", style: sut.textStyle)
+
+            let frame = mark.textFrame
+
+            check(frame.minX < 20 && frame.minY < 20 && mark.bounds.contains(frame), "box \(frame) not padded or not inside \(mark.bounds)")
+        }
+        test("choices saved before text sizes existed open text in the Box style") {
+            Settings.editorChoices = ["textStyle": 0]; defer { Settings.editorChoices = [:] }
+            let sut = Canvas(image: fixture())
+
+            sut.restoreChoices()
+
+            checkEqual(sut.textStyle, 8)
+        }
+        // README: a quick flick dismisses a card even when it moved only a little; a slow short drag springs back.
+        test("a quick short flick throws the card off and a slow one springs back") {
+            checkEqual(OverlayCard.throwDirection(dx: 30, velocity: 900), 1)
+            checkEqual(OverlayCard.throwDirection(dx: 30, velocity: 100), nil)
         }
 
         // MARK: Keyboard (README: each tool has a single-key shortcut)

@@ -3,7 +3,9 @@ import CoreImage
 import ImageIO
 
 struct ShotProject: Codable {
-    var version = 1
+    /// Version 2 stores a text mark's font size in points in `width`; version 1 stored a stroke width (size = 12 + 3 x width).
+    static let current = 2
+    var version = current
     var image: Data
     var size: CGSize
     var canvasSize: CGSize
@@ -16,14 +18,21 @@ struct ShotProject: Codable {
         image = data; size = canvas.image.size; canvasSize = canvas.bounds.size; marks = canvas.marks; self.background = background
     }
     func decodedImage() throws -> NSImage {
-        guard version == 1, let result = NSImage(data: image),
+        guard version == Self.current, let result = NSImage(data: image),
               size.width.isFinite, size.height.isFinite, (1...100_000).contains(size.width), (1...100_000).contains(size.height),
               canvasSize.width.isFinite, canvasSize.height.isFinite, (1...100_000).contains(canvasSize.width), (1...100_000).contains(canvasSize.height) else { throw CocoaError(.fileReadCorruptFile) }
         let pixels = ImageTools.pixelSize(result)
         guard pixels.width * pixels.height <= 100_000_000 else { throw CocoaError(.fileReadCorruptFile) }
         result.size = size; return result
     }
-    static func read(_ url: URL) throws -> ShotProject { try JSONDecoder().decode(Self.self, from: Data(contentsOf: url)) }
+    static func read(_ url: URL) throws -> ShotProject {
+        var project = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+        if project.version == 1 {
+            for i in project.marks.indices where project.marks[i].tool == .text { project.marks[i].width = min(256, 12 + 3 * project.marks[i].width) }
+            project.version = current
+        }
+        return project
+    }
     func write(_ url: URL) throws { try JSONEncoder().encode(self).write(to: url, options: .atomic) }
 }
 
