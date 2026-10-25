@@ -386,15 +386,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--e2e") {
     E2ETests.run(junit: URL(fileURLWithPath: out))
 }
 if CommandLine.arguments.contains("--selftest") {
-    do { try EditorTests.run() } catch { fatalError("Regression tests: \(error)") }
+    EditorTests.run()
     var videoTestsFinished = false
-    Task { @MainActor in
-        do { try await EditorTests.runVideo() } catch { fatalError("Video regression: \(error)") }
-        videoTestsFinished = true
-    }
+    Task { @MainActor in await EditorTests.runVideo(); videoTestsFinished = true }
     while !videoTestsFinished { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-    SelfTest.run()
-    exit(0)
+    EditorTests.finish()
 }
 
 let app = NSApplication.shared

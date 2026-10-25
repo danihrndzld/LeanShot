@@ -23,7 +23,7 @@ Use the app bundle binary for previews, because only that binary renders Liquid 
 - Never add `default:` to a `switch` on `Tool`, and add new `Tool` cases at the end because raw values are saved in `.leanshot` files.
 - Add new preferences to `Settings`, and keep large data in Application Support files.
 - Call `Canvas.checkpoint()` once before a change that should be undoable.
-- Add one check to `EditorTests.run()` for each non-trivial logic change, and run `--selftest` before you report the work as done.
+- Add one `test("behavior in plain words")` to `EditorTests.run()` for each non-trivial logic change, and run `--selftest` before you report the work as done.
 - Measure with `--bench` before and after a performance change, and report both numbers.
 - The user writes in Spanish, so reply in Spanish.
 
